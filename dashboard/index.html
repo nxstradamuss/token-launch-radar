@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Radar — pre-token protocols priced by their peers</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="hero">
+    <div class="hero-left">
+      <div class="brand"><span class="pip" aria-hidden="true"></span>Token Radar</div>
+      <h1 id="title">Every pre-token protocol, priced against the category that already trades</h1>
+      <p class="sub" id="subtitle">Loading the snapshot…</p>
+    </div>
+    <div class="hero-right">
+      <div class="chips" id="chips"></div>
+      <nav class="tabs" id="tabs" aria-label="Views">
+        <button type="button" data-view="board" class="tab is-on">Board</button>
+        <button type="button" data-view="fit" class="tab">How it's fitted</button>
+        <button type="button" data-view="peers" class="tab">Peer multiples</button>
+        <button type="button" data-view="live" class="tab">Live market</button>
+        <button type="button" data-view="aside" class="tab">Set aside</button>
+      </nav>
+    </div>
+  </header>
+
+  <section class="stats" id="stats" aria-label="Snapshot at a glance"></section>
+
+  <div class="controls" id="controls" hidden>
+    <label class="field search">
+      <span class="field-label">Search</span>
+      <input type="search" id="q" placeholder="protocol, slug, chain…" autocomplete="off" spellcheck="false">
+    </label>
+    <label class="field">
+      <span class="field-label">Category</span>
+      <select id="cat"></select>
+    </label>
+    <label class="field">
+      <span class="field-label">Chain</span>
+      <select id="chain"></select>
+    </label>
+    <label class="field">
+      <span class="field-label">Sort</span>
+      <select id="sort">
+        <option value="rank">Rank (implied value)</option>
+        <option value="tvl">TVL, largest</option>
+        <option value="change">7d change, strongest</option>
+        <option value="age">Age, oldest</option>
+        <option value="name">Name, A–Z</option>
+        <option value="mult">Multiple, highest</option>
+      </select>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="watch">
+      <span>Watchlist only</span>
+    </label>
+    <button type="button" id="reset" class="ghost">Reset</button>
+  </div>
+
+  <main id="view" tabindex="-1"></main>
+
+  <footer class="foot">
+    <span id="foot-left"></span>
+    <span class="foot-note">No network calls: the page reads one local <code>data.js</code> and nothing else.</span>
+  </footer>
+
+</div>
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
