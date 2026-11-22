@@ -299,6 +299,7 @@ td.num { font-family: var(--mono); font-size: 12px; }
 
 .neg { color: var(--rose); }
 .pos { color: var(--signal); }
+.tiltc { color: var(--amber); }
 .mute { color: var(--dim-2); }
 
 .mult { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }

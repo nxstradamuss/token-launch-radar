@@ -116,7 +116,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-5';
 
 /**
  * The economic neighbourhood of each category: the categories whose live multiples stand in when a
@@ -493,9 +493,13 @@ export function scoreProtocol(
     log10Multiple = explained.reduce((acc, c) => acc + c.contribution, 0) + (fit.coefficients[0] ?? 0);
     fittedMultiple = 10 ** log10Multiple;
     const band = bandFor(fit, fittedMultiple);
-    implied = Math.max(1, Math.round(protocol.tvl_usd * fittedMultiple));
-    bandLow = Math.max(1, Math.round(protocol.tvl_usd * band.low));
-    bandHigh = Math.max(1, Math.round(protocol.tvl_usd * band.high));
+    // The fitted multiple prices size and category. The snapshot's other two figures — the seven-day
+    // move and the years run with no token — tilt that multiple inside bounds the page prints, so the
+    // implied value follows from all three inputs the rubric names, not from size alone.
+    const tilted = fittedMultiple * growthMult * maturityMult;
+    implied = Math.max(1, Math.round(protocol.tvl_usd * tilted));
+    bandLow = Math.max(1, Math.round(protocol.tvl_usd * band.low * growthMult * maturityMult));
+    bandHigh = Math.max(1, Math.round(protocol.tvl_usd * band.high * growthMult * maturityMult));
   } else {
     // No live tokens to fit on: fall back to the peer multiple alone rather than inventing a model.
     fittedMultiple = peers.multiple;

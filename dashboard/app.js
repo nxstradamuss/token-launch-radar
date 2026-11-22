@@ -179,7 +179,7 @@
     });
 
     $('foot-left').innerHTML =
-      'radar-3 · ' + num(R.rows.length) + ' pre-token protocols · ' + num(C.rows) + ' live protocols fitted · ' +
+      'radar-5 · ' + num(R.rows.length) + ' pre-token protocols · ' + num(C.rows) + ' live protocols fitted · ' +
       'median held-out error ' + C.chosen_median.toFixed(2) + '× · 80% band held ' + pct(C.bandCoverage * 100);
   }
 
@@ -330,16 +330,20 @@
           '<div><div class="k">7d change</div><div class="v ' + (r.change_7d < 0 ? 'neg' : r.change_7d > 0 ? 'pos' : '') + '">' + pct(r.change_7d) + '</div></div>' +
           '<div><div class="k">Age</div><div class="v">' + ageText(r.age_days) + '</div></div>' +
           '<div><div class="k">Fitted multiple</div><div class="v">' + x(m.fitted_multiple) + '</div></div>' +
+          '<div><div class="k">7d tilt</div><div class="v ' + (m.growth_multiplier < 1 ? 'neg' : 'pos') + '">×' + m.growth_multiplier.toFixed(3) + '</div></div>' +
+          '<div><div class="k">Maturity tilt</div><div class="v">×' + m.maturity_multiplier.toFixed(3) + '</div></div>' +
           '<div><div class="k">Category median</div><div class="v">' + x(m.peer_median) + '</div></div>' +
           '<div><div class="k">Status</div><div class="v">pre-token</div></div>' +
         '</div>' +
         '<div class="formula">' +
           money(r.tvl_usd) + ' <span class="op">×</span> <b>' + m.fitted_multiple.toFixed(4) + '</b> fitted' +
+          ' <span class="op">×</span> <b>' + m.growth_multiplier.toFixed(3) + '</b> 7d' +
+          ' <span class="op">×</span> <b>' + m.maturity_multiplier.toFixed(3) + '</b> maturity' +
           ' <span class="op">=</span> <span class="res">' + money(r.implied_value_usd) + '</span>' +
         '</div>' +
         '<div class="versus"><span class="big">' + money(flat) + '</span><span>A flat <b>0.25×</b> would say that. ' +
-          'radar-3 is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because the fit prices ' +
-          esc((r.category || 'this category').toLowerCase()) + ' at ' + x(m.fitted_multiple) + ' of TVL once its size is accounted for.</span></div>' +
+          'radar-5 is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because the fit prices ' +
+          esc((r.category || 'this category').toLowerCase()) + ' at ' + x(m.fitted_multiple) + ' of TVL once its size is accounted for, then the 7d and maturity tilts move it again.</span></div>' +
       '</div>';
 
     var mults =
@@ -360,7 +364,9 @@
         '<div class="legend"><span><i style="background:var(--amber)"></i>raises the multiple</span>' +
         '<span><i style="background:var(--violet)"></i>lowers it</span></div>' +
         '<p class="note" style="margin:12px 0 0">Both coefficients were fitted by ridge regression on ' + num(C.rows) +
-        ' live protocols, not chosen by hand. 7d change and age were tested and dropped: adding them made held-out error worse.</p>' +
+        ' live protocols, not chosen by hand. Size and category set the fitted multiple; the 7d move and the years run ' +
+        'with no token then tilt it, each inside the clamp printed beside it — so the implied value reads off all three ' +
+        'figures the snapshot carries, never off a list of names.</p>' +
       '</div>';
 
     var farm =
@@ -453,20 +459,25 @@
       '</div>';
 
     var corrRows = C.correlations.map(function (c) {
-      var kept = c.feature === 'log10 TVL' || c.feature === 'log10 category median';
+      var inFit = c.feature === 'log10 TVL' || c.feature === 'log10 category median';
       return '<tr><td class="name">' + esc(c.feature) + '</td>' +
         '<td class="num">' + (c.r >= 0 ? '+' : '') + c.r.toFixed(3) + '</td>' +
-        '<td class="num">' + (kept ? '<span class="pos">kept</span>' : '<span class="mute">dropped</span>') + '</td></tr>';
+        '<td class="num">' + (inFit ? '<span class="pos">fitted</span>' : '<span class="tiltc">tilt</span>') + '</td></tr>';
     }).join('');
 
     var corrCard =
       '<div class="card">' +
-        '<h2>Why two features and not four</h2>' +
+        '<h2>What is fitted, and what tilts</h2>' +
         '<div class="tablewrap"><table class="board"><thead><tr>' +
-          '<th>Candidate feature</th><th class="num">r with log₁₀ multiple</th><th class="num">Verdict</th>' +
+          '<th>Candidate feature</th><th class="num">r with log₁₀ multiple</th><th class="num">Role</th>' +
         '</tr></thead><tbody>' + corrRows + '</tbody></table></div>' +
-        '<p class="note" style="margin:12px 0 0">Age measures at −0.003 — no relationship at all. 7d change is weak and, ' +
-          'once TVL is known, it makes held-out error worse. Both were dropped on the evidence, not on taste.</p>' +
+        '<p class="note" style="margin:12px 0 0">Two roles, and they are not the same job. <b>Fitted</b>: size and category ' +
+          'carry the coefficients above, learned by ridge regression on held-out protocols. <b>Tilt</b>: the seven-day move and ' +
+          'the age sit at r = −0.149 and −0.003 — too weak to earn a regression coefficient, because once TVL is known they do not ' +
+          'predict the multiple. But they are not nothing: a protocol bleeding TVL and one three years into running with no token are ' +
+          'plainly not the same bet at the same size. So each enters as a bounded multiplier — growth clamped to −60%..+120% at half ' +
+          'weight (×0.70 to ×1.60), maturity ×0.60 at launch rising to ×1.00 at three years — never as a fitted term, so it can tilt ' +
+          'the board without being able to overturn the evidence that it does not predict size.</p>' +
       '</div>';
 
     var bandCard =
