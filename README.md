@@ -1,15 +1,20 @@
 # Token Launch Radar
 
-![competition](https://img.shields.io/badge/make.fun-token--radar--01-6f42c1)
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/nxstradamuss/token-launch-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/nxstradamuss/token-launch-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
 ![model](https://img.shields.io/badge/model-radar--2-0ea5e9)
 ![rows](https://img.shields.io/badge/rows-227-22c55e)
 ![build](https://img.shields.io/badge/build-node%2022-339933?logo=node.js&logoColor=white)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
-An entry for **make.fun `token-radar-01`**. The program reads the sealed DefiLlama
-snapshot, asks what a protocol's token *would* be worth if its record stayed exactly
-as it is, and hands back a board a reader can act on: every pre-token protocol ranked
-by implied value, a detail view for each one, a filter, and the steps to farm it.
+An entry for the **[make.fun](https://make.fun/bounty/token-radar-01) `token-radar-01`
+bounty** — *Build the best token launch radar*, $1,325 in USDC. The program reads the
+sealed DefiLlama snapshot, asks what a protocol's token *would* be worth if its record
+stayed exactly as it is, and hands back a board a reader can act on: every pre-token
+protocol ranked by implied value, a detail view for each one, a filter, and the steps
+to farm it.
 
 It does not predict whether or when a token is issued. Every implied value on the
 board is this entry's own claim, never one make.fun makes.
