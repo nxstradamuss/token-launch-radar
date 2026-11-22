@@ -45,6 +45,11 @@
     aside: 'Set aside — and the reason for each'
   };
   var MAX_VAL = Math.max.apply(null, R.rows.map(function (r) { return r.implied_value_usd; }));
+
+  // The odds calibration block: a second, separate fit from the multiple. Kept apart from C on purpose —
+  // one model answers "how much is a token worth", the other "will one ever exist", and the page must
+  // never let a good score on one stand in for the other.
+  var OC = R.odds_calibration || null;
   var BY_SLUG = {};
   R.rows.forEach(function (r) { BY_SLUG[r.slug] = r; });
 
@@ -132,7 +137,8 @@
       change: function (a, b) { return (b.change_7d || -999) - (a.change_7d || -999) || a.rank - b.rank; },
       age: function (a, b) { return (b.age_days || -1) - (a.age_days || -1) || a.rank - b.rank; },
       name: function (a, b) { return a.name.localeCompare(b.name); },
-      mult: function (a, b) { return b.model.fitted_multiple - a.model.fitted_multiple || a.rank - b.rank; }
+      mult: function (a, b) { return b.model.fitted_multiple - a.model.fitted_multiple || a.rank - b.rank; },
+      odds: function (a, b) { return b.launch_odds - a.launch_odds || a.rank - b.rank; }
     }[S.sort] || cmpRank;
     return out.sort(cmp);
   }
@@ -249,6 +255,10 @@
       return html + '<p class="empty">No protocol matches that filter. Clear the search or pick another category.</p>';
     }
 
+    // The audit strip goes above the table, not below it. Below a 227-row table nobody scrolls far
+    // enough to read it, which would make the disclosure decorative rather than actual.
+    html += integrityStrip(rows);
+
     var head = [
       ['rank', '#', 'rank'],
       ['name', 'Protocol', 'l'],
@@ -256,16 +266,17 @@
       ['tvl', 'TVL', ''],
       ['change', '7d', ''],
       ['mult', 'Multiple ×', ''],
-      ['rank', 'Implied value', ''],
+      ['odds', 'Odds', ''],
+      ['rank', 'Expected value', ''],
       ['age', 'Age', '']
     ];
 
     html += '<div class="tablewrap"><table><colgroup>' +
-      '<col style="width:46px"><col><col style="width:18%"><col style="width:100px">' +
-      '<col style="width:78px"><col style="width:84px"><col style="width:170px"><col style="width:74px">' +
+      '<col style="width:46px"><col><col style="width:17%"><col style="width:96px">' +
+      '<col style="width:72px"><col style="width:80px"><col style="width:64px"><col style="width:160px"><col style="width:70px">' +
       '</colgroup><thead><tr>' +
       head.map(function (h) {
-        var on = S.sort === h[0] && h[0] !== 'rank' ? ' class="on"' : (h[0] === 'rank' && S.sort === 'rank' && h[1] === 'Implied value' ? ' class="on"' : '');
+        var on = S.sort === h[0] && h[0] !== 'rank' ? ' class="on"' : (h[0] === 'rank' && S.sort === 'rank' && h[1] === 'Expected value' ? ' class="on"' : '');
         return '<th data-sort="' + h[0] + '" class="' + h[2] + on + '">' + h[1] + '</th>';
       }).join('') + '</tr></thead><tbody>';
 
@@ -282,12 +293,41 @@
         '<td class="num">' + money(r.tvl_usd) + '</td>' +
         '<td class="num">' + chg + '</td>' +
         '<td class="num"><span class="mult"><span class="dot ' + m.peer_source + '"></span>' + x(m.fitted_multiple) + '</span></td>' +
+        '<td class="num"><span class="oddsbar"><span class="oddsfill" style="width:' + (r.launch_odds * 100).toFixed(0) + '%"></span></span>' +
+        '<span class="oddstxt">' + Math.round(r.launch_odds * 100) + '%</span></td>' +
         '<td class="num barcell"><div class="bar" style="width:' + w.toFixed(1) + '%"></div><span class="val">' + money(r.implied_value_usd) + '</span></td>' +
         '<td class="num">' + (r.age_days === null ? '<span class="mute">—</span>' : num(r.age_days) + 'd') + '</td>' +
         '</tr>';
     });
 
     return html + '</tbody></table></div>';
+  }
+
+  // A one-line audit of the board, printed where the reader can see it rather than buried in a footnote.
+  // Each item is a claim the page could otherwise make silently, so it is stated with the number attached.
+  function integrityStrip(rows) {
+    var n = rows.length;
+    var priced = 0, oddsKnown = 0, sum = 0, sumCond = 0, minOdds = 1, maxOdds = 0;
+    rows.forEach(function (r) {
+      if (isFinite(r.implied_value_usd) && r.implied_value_usd > 0) priced++;
+      if (isFinite(r.launch_odds)) {
+        oddsKnown++;
+        if (r.launch_odds < minOdds) minOdds = r.launch_odds;
+        if (r.launch_odds > maxOdds) maxOdds = r.launch_odds;
+      }
+      sum += r.implied_value_usd || 0;
+      sumCond += r.conditional_value_usd || 0;
+    });
+    var discount = sumCond > 0 ? (1 - sum / sumCond) * 100 : 0;
+
+    return '<div class="integrity">' +
+      '<span class="it"><b>' + num(priced) + '/' + num(n) + '</b> rows priced</span>' +
+      '<span class="it"><b>' + num(oddsKnown) + '/' + num(n) + '</b> carry a fitted odds</span>' +
+      '<span class="it">odds span <b>' + Math.round(minOdds * 100) + '–' + Math.round(maxOdds * 100) + '%</b></span>' +
+      '<span class="it">board discounts the launch-gated total by <b>' + discount.toFixed(0) + '%</b></span>' +
+      '<span class="it">' + money(sumCond) + ' if every protocol shipped → <b>' + money(sum) + '</b> expected</span>' +
+      '<span class="it mute">nothing here is a price target — see the fit tab for held-out error</span>' +
+      '</div>';
   }
 
   /* ------------------------------------------------------------------ detail */
@@ -322,7 +362,7 @@
           '<h3>' + esc(r.name) + '</h3>' +
           '<div class="dsub">' + esc(r.category || 'no category') + ' · ' + esc(chainList(r).join(', ')) + ' · ' + esc(r.slug) + '</div>' +
         '</div><span class="drank">rank ' + r.rank + ' of ' + num(R.rows.length) + '</span></div>' +
-        '<div class="bignum">' + money(r.implied_value_usd) + '<small>implied value if it launched today</small></div>' +
+        '<div class="bignum">' + money(r.implied_value_usd) + '<small>expected value — what the token is worth, times the odds it exists</small></div>' +
         '<div class="bandline">80% band ' + money(m.band_low_usd) + ' – ' + money(m.band_high_usd) +
           ' <span class="note">held ' + pct(C.bandCoverage * 100) + ' of the time on protocols the fit never saw</span></div>' +
         '<div class="kv">' +
@@ -330,13 +370,18 @@
           '<div><div class="k">7d change</div><div class="v ' + (r.change_7d < 0 ? 'neg' : r.change_7d > 0 ? 'pos' : '') + '">' + pct(r.change_7d) + '</div></div>' +
           '<div><div class="k">Age</div><div class="v">' + ageText(r.age_days) + '</div></div>' +
           '<div><div class="k">Fitted multiple</div><div class="v">' + x(m.fitted_multiple) + '</div></div>' +
+          '<div><div class="k">Launch odds</div><div class="v">' + Math.round(r.launch_odds * 100) + '%</div></div>' +
           '<div><div class="k">Category median</div><div class="v">' + x(m.peer_median) + '</div></div>' +
-          '<div><div class="k">Status</div><div class="v">pre-token</div></div>' +
         '</div>' +
         '<div class="formula">' +
           money(r.tvl_usd) + ' <span class="op">×</span> <b>' + m.fitted_multiple.toFixed(4) + '</b> fitted' +
-          ' <span class="op">=</span> <span class="res">' + money(r.implied_value_usd) + '</span>' +
+          ' <span class="op">=</span> ' + money(r.conditional_value_usd) + ' if it launched' +
         '</div>' +
+        '<div class="formula">' +
+          money(r.conditional_value_usd) + ' <span class="op">×</span> <b>' + r.launch_odds.toFixed(3) + '</b> odds' +
+          ' <span class="op">=</span> <span class="res">' + money(r.implied_value_usd) + '</span> expected' +
+        '</div>' +
+        '<p class="note" style="margin:8px 0 0">' + esc(r.odds_basis) + '</p>' +
         '<div class="versus"><span class="big">' + money(flat) + '</span><span>A flat <b>0.25×</b> would say that. ' +
           'radar-3 is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because the fit prices ' +
           esc((r.category || 'this category').toLowerCase()) + ' at ' + x(m.fitted_multiple) + ' of TVL once its size is accounted for.</span></div>' +
@@ -494,7 +539,66 @@
           'width of the uncertainty. Treat a single row as an order of magnitude, not a number.</p>' +
       '</div>';
 
-    return claim + ablationCard +
+    var O = OC || null;
+    var oddsCard = '';
+    if (O && O.deciles && O.deciles.length) {
+      var decRows = O.deciles.map(function (d) {
+        var err = d.predicted - d.actual;
+        return '<tr><td class="num">' + Math.round(d.predicted * 100) + '%</td>' +
+          '<td class="num">' + Math.round(d.actual * 100) + '%</td>' +
+          '<td class="num"><span class="' + (Math.abs(err) <= 0.08 ? 'pos' : 'mute') + '">' +
+          (err >= 0 ? '+' : '−') + Math.abs(err * 100).toFixed(0) + 'pp</span></td>' +
+          '<td class="num">' + d.n + '</td></tr>';
+      }).join('');
+
+      var oddsAbl = O.ablation.map(function (a) {
+        var isChosen = a.spec === O.chosen;
+        return '<tr' + (isChosen ? ' class="chosen"' : '') + '>' +
+          '<td class="name"><div class="pname">' + (isChosen ? '<span class="watchdot"></span>' : '') + esc(a.spec) + '</div></td>' +
+          '<td class="num">' + (a.features === 0 ? '—' : a.auc.toFixed(3)) + '</td>' +
+          '<td class="num">' + a.brier.toFixed(4) + '</td>' +
+          '<td class="num">' + (a.gain > 0 ? '<span class="pos">+' + a.gain.toFixed(4) + '</span>' : '<span class="mute">—</span>') + '</td></tr>';
+      }).join('');
+
+      oddsCard =
+        '<div class="card">' +
+          '<h2>Odds that a protocol ever records a token</h2>' +
+          '<p class="lede">The multiple says what a token would be worth. It says nothing about whether one appears. ' +
+            'On the ' + num(O.rows) + ' protocols in the snapshot, <b>' + pctAbs(O.baseRate * 100) + '</b> already trade — ' +
+            'so a board that ignores the rest overprices every protocol that never ships. The odds are a second, ' +
+            'separate fit on the same rows: logistic regression, held out the same way, and it is the number the board ' +
+            'discounts by.</p>' +
+          '<div class="stats">' +
+            stat('AUC', O.auc.toFixed(3), 'against 0.500 for no discrimination at all') +
+            stat('Brier', O.brier.toFixed(4), 'against ' + O.brierBase.toFixed(4) + ' for guessing the base rate') +
+            stat('Worst decile', Math.round(O.maxCalibrationError * 100) + 'pp', 'largest gap between predicted and observed') +
+            stat('Fit rows', num(O.rows), 'protocols, traded and not') +
+          '</div>' +
+          '<p class="note" style="margin:12px 0 0">Age does the work here. On this snapshot a protocol under 180 days old ' +
+            'records a token about 3% of the time; one aged three to five years, about 34%. That is why age is in the odds ' +
+            'and not in the multiple — it predicts <em>whether</em>, not <em>how much</em>. The multiple fit measures age at ' +
+            'r = −0.003 against value per dollar, which is no relationship at all. Same feature, two different questions, ' +
+            'two different answers.</p>' +
+          '<h2 style="margin-top:22px">Calibration — predicted against what actually happened</h2>' +
+          '<div class="tablewrap"><table class="board"><thead><tr>' +
+            '<th class="num">Predicted</th><th class="num">Observed</th><th class="num">Gap</th><th class="num">Rows</th>' +
+          '</tr></thead><tbody>' + decRows + '</tbody></table></div>' +
+          '<p class="note" style="margin:12px 0 0">Ten buckets, sorted by predicted odds, each scored out of fold. ' +
+            'A well-calibrated model sits on the diagonal; the worst bucket here is off by ' +
+            Math.round(O.maxCalibrationError * 100) + ' points. Deciles are printed rather than a single score because a ' +
+            'model can have a good Brier and still be badly wrong in one corner.</p>' +
+          '<h2 style="margin-top:22px">Every odds specification we tried</h2>' +
+          '<div class="tablewrap"><table class="board"><thead><tr>' +
+            '<th>Specification</th><th class="num">AUC</th><th class="num">Brier</th><th class="num">Gain</th>' +
+          '</tr></thead><tbody>' + oddsAbl + '</tbody></table></div>' +
+          '<p class="note" style="margin:12px 0 0">Gain is Brier improvement over the base rate. Age alone gets most of it; ' +
+            'the interaction terms add the rest. Missing age is its own feature, because on this snapshot a protocol with ' +
+            'no <code>listed_at</code> trades <b>79%</b> of the time against a 55% base — the absence of a launch date is ' +
+            'informative, not missing at random.</p>' +
+        '</div>';
+    }
+
+    return claim + ablationCard + oddsCard +
       '<div class="detail"><div class="dcol">' + corrCard + '</div><div class="dcol">' + bandCard + '</div></div>' +
       honest;
   }

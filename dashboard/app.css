@@ -320,7 +320,35 @@ td.num { font-family: var(--mono); font-size: 12px; }
 
 .val { position: relative; z-index: 1; font-weight: 600; }
 
+.oddsbar {
+  display: inline-block;
+  width: 30px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.07);
+  vertical-align: 2px;
+  margin-right: 6px;
+  overflow: hidden;
+}
+.oddsfill { display: block; height: 100%; border-radius: 2px; background: var(--signal); }
+.oddstxt { font-variant-numeric: tabular-nums; }
+
 .watchdot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--amber); margin-right: 5px; vertical-align: 1px; }
+
+.integrity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.015);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.integrity .it b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.integrity .it.mute { margin-left: auto; font-style: italic; }
 
 .empty { padding: 40px 20px; text-align: center; color: var(--dim); }
 

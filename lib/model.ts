@@ -48,6 +48,14 @@ import {
   type FitSample,
 } from './fit.ts';
 
+import {
+  fitOdds,
+  predictOdds,
+  type OddsCalibration,
+  type OddsModel,
+  type OddsSample,
+} from './odds.ts';
+
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -117,6 +125,30 @@ export const MODEL: ModelConstants = {
 
 /** The model's version label: the dashboard names it and the rules quote it. */
 export const MODEL_VERSION = 'radar-3';
+
+/**
+ * The share of a token's value a points programme typically hands to farmers.
+ *
+ * This exists because the board's expected value and a farm's expected take are different numbers,
+ * and conflating them produces ratios in the millions. A programme allocates a few percent of supply
+ * to the people who farm it; the rest belongs to the team, the treasury and the market. Two percent
+ * is deliberately conservative — several programmes have allocated more — so the net-EV line errs
+ * toward talking a reader out of a farm rather than into one.
+ */
+export const FARM_ALLOCATION_SHARE = 0.02;
+
+/**
+ * How many wallets a points programme's farmer allocation is assumed to be split across.
+ *
+ * Without this, a farm's take is pure capital share: $200 deposited into a $500M protocol is a
+ * share of 4e-7, which prices every farm at a fraction of a cent and tells a reader nothing. Real
+ * programmes do not work that way — they set a qualifying bar and split the pool across the wallets
+ * that clear it, so a small but genuine participant gets a baseline slice rather than a
+ * proportional crumb. Five thousand qualifying wallets is the order of magnitude for a mid-size
+ * programme, and it is the assumption a reader should challenge first: a more crowded programme
+ * lowers every take here, and a quieter one raises them.
+ */
+export const ASSUMED_QUALIFYING_WALLETS = 5000;
 
 /**
  * The economic neighbourhood of each category: the categories whose live multiples stand in when a
@@ -213,6 +245,17 @@ export interface RowModel {
   log10_multiple: number;
   /** Each feature's contribution to log10_multiple, so the row can show its own arithmetic. */
   contributions: { feature: string; value: number; coefficient: number; contribution: number }[];
+  /** P(a token is ever recorded), from the odds fit. Out-of-fold, never in-sample. */
+  launch_odds: number;
+  /** How that odds figure was produced, in words the row can print. */
+  odds_basis: string;
+  /** The value if a token does exist: tvl x fitted_multiple. */
+  conditional_value_usd: number;
+  /** conditional_value_usd x launch_odds: what the position is worth in expectation. */
+  expected_value_usd: number;
+  /** The 80% band around expected value, scaled by the same odds. */
+  ev_band_low_usd: number;
+  ev_band_high_usd: number;
   peer_multiple: number;
   peer_median: number;
   peer_count: number;
@@ -239,7 +282,12 @@ export interface BoardRow {
   listed_at: string | null;
   token_status: 'pre-token';
   watchlisted: boolean;
+  /** What the token would be worth if it existed, times the odds it does: the board ranks on this. */
   implied_value_usd: number;
+  /** What the token would be worth if it existed, before the odds discount. */
+  conditional_value_usd: number;
+  /** P(a token is ever recorded). */
+  launch_odds: number;
   model: RowModel;
   farm_steps: string[];
 }
@@ -292,6 +340,9 @@ export interface RadarData {
   /** The fitted model, and the out-of-sample evidence for it. The dashboard prints both. */
   fit: FitModel | null;
   calibration: Calibration | null;
+  /** The launch-odds model and its out-of-sample evidence. */
+  odds_model: OddsModel | null;
+  odds_calibration: OddsCalibration | null;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -453,14 +504,15 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
 }
 
-/** The three multipliers and the implied value one protocol gets. */
+/** The value one protocol gets: the conditional value, and the expected value the board ranks. */
 export function scoreProtocol(
   protocol: SnapshotProtocol,
   asOf: string,
   peers: PeerStat,
   model: ModelConstants = MODEL,
   fit: FitModel | null = null,
-): { implied: number; model: RowModel } {
+  odds: { value: number; basis: string } | null = null,
+): { implied: number; conditional: number; model: RowModel } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
@@ -480,7 +532,7 @@ export function scoreProtocol(
     categoryMedian: peers.median > 0 ? peers.median : null,
   };
 
-  let implied: number;
+  let conditional: number;
   let fittedMultiple: number;
   let log10Multiple: number;
   let bandLow = 0;
@@ -493,20 +545,28 @@ export function scoreProtocol(
     log10Multiple = explained.reduce((acc, c) => acc + c.contribution, 0) + (fit.coefficients[0] ?? 0);
     fittedMultiple = 10 ** log10Multiple;
     const band = bandFor(fit, fittedMultiple);
-    implied = Math.max(1, Math.round(protocol.tvl_usd * fittedMultiple));
+    conditional = Math.max(1, Math.round(protocol.tvl_usd * fittedMultiple));
     bandLow = Math.max(1, Math.round(protocol.tvl_usd * band.low));
     bandHigh = Math.max(1, Math.round(protocol.tvl_usd * band.high));
   } else {
     // No live tokens to fit on: fall back to the peer multiple alone rather than inventing a model.
     fittedMultiple = peers.multiple;
     log10Multiple = Math.log10(Math.max(peers.multiple, 1e-9));
-    implied = Math.max(1, Math.round(protocol.tvl_usd * peers.multiple * growthMult * maturityMult));
-    bandLow = implied;
-    bandHigh = implied;
+    conditional = Math.max(1, Math.round(protocol.tvl_usd * peers.multiple * growthMult * maturityMult));
+    bandLow = conditional;
+    bandHigh = conditional;
   }
+
+  // The odds discount the conditional value for the chance there is nothing to farm yet. This is not a
+  // forecast of when a token arrives: it is the weight the snapshot's own record puts on the value
+  // existing at all, so a protocol with no market and no token is not ranked beside one about to list.
+  // When no odds fit exists the row is priced as if the token were certain, and the basis says so.
+  const launchOdds = odds === null ? 1 : Math.min(0.999, Math.max(0.001, odds.value));
+  const implied = Math.max(1, Math.round(conditional * launchOdds));
 
   return {
     implied,
+    conditional,
     model: {
       fitted_multiple: round4(fittedMultiple),
       band_low_usd: bandLow,
@@ -518,6 +578,12 @@ export function scoreProtocol(
         coefficient: round4(c.coefficient),
         contribution: round4(c.contribution),
       })),
+      launch_odds: round4(launchOdds),
+      odds_basis: odds === null ? 'no odds fit: priced as certain' : odds.basis,
+      conditional_value_usd: conditional,
+      expected_value_usd: implied,
+      ev_band_low_usd: Math.max(1, Math.round(bandLow * launchOdds)),
+      ev_band_high_usd: Math.max(1, Math.round(bandHigh * launchOdds)),
       peer_multiple: peers.multiple,
       peer_median: peers.median,
       peer_count: peers.peers,
@@ -1032,7 +1098,12 @@ function planFor(category: string | null): PlanSpec {
  * A protocol's farm plan: seven steps, each an action with a cost and a time, derived from the
  * protocol's own record (category, chains, TVL, age) and never from a hand-written list of names.
  */
-export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
+export function farmSteps(
+  p: SnapshotProtocol,
+  age: number | null,
+  expectedValueUsd = 0,
+  launchOdds = 1,
+): FarmStep[] {
   const chain = chainOf(p);
   const gas = gasOf(p);
   const capital = capitalFor(p);
@@ -1043,6 +1114,28 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const maturity = Math.round(
     (MODEL.maturity_floor + (Math.min(Math.max(age ?? MODEL.unknown_age_days, 0), MODEL.maturity_days) / MODEL.maturity_days) * MODEL.maturity_range) * 100,
   );
+  // The arithmetic a reader needs before spending anything. The board's expected value is what the
+  // token would be worth, not what a farmer receives: a points programme hands out a slice of supply,
+  // and that slice is then split across the wallets that qualify. So the take is the board value
+  // times the farmer allocation times this farm's share of the qualifying set — its capital share
+  // when that is larger than an even split, an even split otherwise. Printing the board value against
+  // gas alone would flatter every row by five orders of magnitude, which is exactly the kind of
+  // number a reader should not trust.
+  const oddsPct = Math.round(launchOdds * 100);
+  const costUsd = Math.max(1, Math.round(capital * 0.06) + 30);
+  const poolUsd = expectedValueUsd * FARM_ALLOCATION_SHARE;
+  const evenShare = 1 / ASSUMED_QUALIFYING_WALLETS;
+  const capitalShare = p.tvl_usd > 0 ? capital / p.tvl_usd : 0;
+  const share = Math.max(capitalShare, evenShare);
+  const farmTakeUsd = Math.round(poolUsd * share);
+  const netUsd = Math.round(farmTakeUsd - costUsd);
+  const ratio = costUsd > 0 ? farmTakeUsd / costUsd : 0;
+  const verdict =
+    ratio >= 2
+      ? 'worth running'
+      : ratio >= 1
+        ? 'marginal: the take barely clears the cost'
+        : 'not worth running at this size';
   return [
     {
       text: `Create a fresh wallet on ${chain} that holds only the $${capital} you plan to farm, and keep its seed phrase offline; never reuse a wallet that holds long-term funds.`,
@@ -1058,6 +1151,11 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       text: `Set the size so that: ${plan.mix}; write the exact amounts in a note so the plan can be repeated or unwound.`,
       cost: `the $${capital} stays in the position`,
       time: '10 minutes',
+    },
+    {
+      text: `Check the arithmetic before committing: the board prices this token at $${expectedValueUsd.toLocaleString('en-US')} of expected value, and a points programme hands farmers about ${Math.round(FARM_ALLOCATION_SHARE * 100)}% of that — a pool of $${Math.round(poolUsd).toLocaleString('en-US')} split across roughly ${ASSUMED_QUALIFYING_WALLETS.toLocaleString('en-US')} qualifying wallets. Your $${capital} of capital is a ${(share * 100).toFixed(3)}% share, so about $${farmTakeUsd.toLocaleString('en-US')} of expected take against $${costUsd} of running cost over ${hold} days: $${netUsd.toLocaleString('en-US')} net, ${ratio.toFixed(2)}x on cost, ${verdict}. The pool is the conditional value discounted by ${oddsPct}% odds, so the take moves with the odds — check it again if they change.`,
+      cost: `about $${costUsd} all-in, gas plus slippage plus the idle balance`,
+      time: '10 minutes to price',
     },
     {
       text: `Then ${plan.cadence}; weekly activity is what a points snapshot can see, and one large deposit on the last day is what it misses.`,
@@ -1148,8 +1246,44 @@ export function buildFit(snapshot: Snapshot): { fit: FitModel; calibration: Cali
   return { fit: model, calibration };
 }
 
+/**
+ * The odds training set: every protocol in the snapshot, with the outcome the model predicts.
+ *
+ * `traded` is 1 when the record carries a gecko id or a symbol — the protocol's token exists — and 0
+ * when it does not. Unlike the multiple fit, which needs a live market cap to have a target at all,
+ * this one learns from every protocol in the file, including the pre-token rows the board ranks. That
+ * is what lets it say something about them: the pre-token rows are the negative class, and the
+ * protocols that already launched are what tells us which shapes tend to become tokens.
+ */
+export function oddsSamples(snapshot: Snapshot): OddsSample[] {
+  return snapshot.protocols.map((p) => ({
+    slug: p.slug,
+    traded: isPreToken(p) ? 0 : 1,
+    tvl: p.tvl_usd,
+    growth: p.change_7d,
+    age: ageDays(snapshot.as_of, p.listed_at),
+    category: p.category,
+  }));
+}
+
+/** Fit the launch-odds model on the snapshot and hand back the model, its report, and the odds. */
+export function buildOdds(snapshot: Snapshot): {
+  model: OddsModel;
+  calibration: OddsCalibration;
+  odds: Map<string, number>;
+} {
+  const { model, calibration, odds } = fitOdds(oddsSamples(snapshot));
+  return { model, calibration, odds };
+}
+
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, fit: FitModel | null = null): BoardRow[] {
+export function buildBoard(
+  snapshot: Snapshot,
+  model: ModelConstants = MODEL,
+  fit: FitModel | null = null,
+  odds: Map<string, number> | null = null,
+  oddsBasis = 'fitted',
+): BoardRow[] {
   const table = buildPeerTable(snapshot.protocols, model);
   const watch = new Set(snapshot.watchlist);
   const index = bySlug(snapshot.protocols);
@@ -1169,12 +1303,17 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, fi
 
   const scored = [...chosen.values()].map((p) => {
     const stat = table.get(p.category ?? '') ?? peerStat('', () => [], model);
-    const { implied, model: m } = scoreProtocol(p, snapshot.as_of, stat, model, fit);
-    return { p, implied, m };
+    const o = odds === null ? null : { value: odds.get(p.slug) ?? 0.5, basis: oddsBasis };
+    const { implied, conditional, model: m } = scoreProtocol(p, snapshot.as_of, stat, model, fit, o);
+    return { p, implied, conditional, m };
   });
+  // Rank on implied value, which already carries the odds discount, so the board orders by what a
+  // position is worth after the chance there is nothing to farm. Ties fall back to the conditional
+  // value, then TVL, then slug, so the order is total and reproducible.
   scored.sort(
     (a, b) =>
       b.implied - a.implied ||
+      b.conditional - a.conditional ||
       b.p.tvl_usd - a.p.tvl_usd ||
       (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0),
   );
@@ -1192,8 +1331,10 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, fi
     token_status: 'pre-token',
     watchlisted: watch.has(s.p.slug),
     implied_value_usd: s.implied,
+    conditional_value_usd: s.conditional,
+    launch_odds: s.m.launch_odds,
     model: s.m,
-    farm_steps: farmSteps(s.p, s.m.age_days).map(stepText),
+    farm_steps: farmSteps(s.p, s.m.age_days, s.implied, s.m.launch_odds).map(stepText),
   }));
 }
 
@@ -1219,7 +1360,8 @@ export function liveRows(snapshot: Snapshot, limit = 40): LiveRow[] {
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const { fit, calibration } = buildFit(snapshot);
-  const board = buildBoard(snapshot, model, fit);
+  const { model: oddsModel, calibration: oddsCalibration, odds } = buildOdds(snapshot);
+  const board = buildBoard(snapshot, model, fit, odds, 'out-of-fold, fitted on this snapshot');
   const live = liveRows(snapshot);
   const watch = new Set(snapshot.watchlist);
   const table = buildPeerTable(snapshot.protocols, model);
@@ -1255,6 +1397,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     peers,
     fit,
     calibration,
+    odds_model: oddsModel,
+    odds_calibration: oddsCalibration,
   };
   return { board, radar };
 }
