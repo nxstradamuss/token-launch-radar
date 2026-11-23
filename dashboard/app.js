@@ -156,16 +156,8 @@
 
     $('subtitle').innerHTML =
       'Snapshot of <b>' + esc(R.as_of) + '</b> from ' + esc(R.source) + '. ' +
-      'Each multiple is fitted on the protocols in this snapshot that already trade — log₁₀ TVL plus the ' +
-      'category median, two coefficients learned by ridge regression — instead of the flat 0.25× the house ' +
-      'starter applies. The fit is scored leave-one-out and the numbers behind it are on the ' +
-      '<a href="?view=fit">How it\'s fitted</a> tab.';
-
-    $('chips').innerHTML =
-      '<span class="chip mint">model <b>' + esc(R.model_version) + '</b></span>' +
-      '<span class="chip">' + num(R.rows.length) + ' rows</span>' +
-      '<span class="chip">' + num(R.peers.length) + ' categories</span>' +
-      '<span class="chip">' + num(R.live_total) + ' live protocols</span>';
+      'Each multiple is fitted on the protocols in this snapshot that already trade, instead of the flat ' +
+      '0.25× the house starter applies.';
 
     $('stats').innerHTML = [
       stat('Ranked', num(R.rows.length), 'of ' + num(R.pretoken_total) + ' pre-token records; ' + num(R.excluded.length) + ' set aside as derivatives'),
@@ -360,7 +352,7 @@
         '<div class="legend"><span><i style="background:var(--amber)"></i>raises the multiple</span>' +
         '<span><i style="background:var(--violet)"></i>lowers it</span></div>' +
         '<p class="note" style="margin:12px 0 0">Both coefficients were fitted by ridge regression on ' + num(C.rows) +
-        ' live protocols, not chosen by hand. 7d change and age were tested and dropped: adding them made held-out error worse.</p>' +
+        ' live protocols, not chosen by hand.</p>' +
       '</div>';
 
     var farm =
@@ -452,23 +444,6 @@
           'if accuracy is all you want, delete the second feature and the error improves.</p>' +
       '</div>';
 
-    var corrRows = C.correlations.map(function (c) {
-      var kept = c.feature === 'log10 TVL' || c.feature === 'log10 category median';
-      return '<tr><td class="name">' + esc(c.feature) + '</td>' +
-        '<td class="num">' + (c.r >= 0 ? '+' : '') + c.r.toFixed(3) + '</td>' +
-        '<td class="num">' + (kept ? '<span class="pos">kept</span>' : '<span class="mute">dropped</span>') + '</td></tr>';
-    }).join('');
-
-    var corrCard =
-      '<div class="card">' +
-        '<h2>Why two features and not four</h2>' +
-        '<div class="tablewrap"><table class="board"><thead><tr>' +
-          '<th>Candidate feature</th><th class="num">r with log₁₀ multiple</th><th class="num">Verdict</th>' +
-        '</tr></thead><tbody>' + corrRows + '</tbody></table></div>' +
-        '<p class="note" style="margin:12px 0 0">Age measures at −0.003 — no relationship at all. 7d change is weak and, ' +
-          'once TVL is known, it makes held-out error worse. Both were dropped on the evidence, not on taste.</p>' +
-      '</div>';
-
     var bandCard =
       '<div class="card">' +
         '<h2>The band, and what it is worth</h2>' +
@@ -494,9 +469,7 @@
           'width of the uncertainty. Treat a single row as an order of magnitude, not a number.</p>' +
       '</div>';
 
-    return claim + ablationCard +
-      '<div class="detail"><div class="dcol">' + corrCard + '</div><div class="dcol">' + bandCard + '</div></div>' +
-      honest;
+    return claim + ablationCard + bandCard + honest;
   }
 
   /* ------------------------------------------------------------------ peers */
