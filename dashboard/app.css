@@ -302,6 +302,7 @@ td.num { font-family: var(--mono); font-size: 12px; }
 .mute { color: var(--dim-2); }
 
 .mult { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.odds { font-variant-numeric: tabular-nums; color: var(--violet); }
 .mult .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--signal); flex: none; }
 .mult .dot.borrowed { background: var(--violet); }
 .mult .dot.fallback { background: var(--dim-2); }

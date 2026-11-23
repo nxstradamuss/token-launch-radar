@@ -37,9 +37,9 @@
     };
   })();
   var TITLES = {
-    board: 'Every pre-token protocol, priced by a multiple fitted to the market',
+    board: 'Every pre-token protocol, priced at TVL × a fitted multiple × the odds of a token',
     detail: 'Protocol dossier',
-    fit: 'How the multiple was fitted, and what it is worth out of sample',
+    fit: 'How the multiple and the odds were fitted, and what they are worth out of sample',
     peers: 'What each category is worth, per dollar of TVL',
     live: 'The market\'s own prices, and what they imply',
     aside: 'Set aside — and the reason for each'
@@ -158,7 +158,9 @@
       'Snapshot of <b>' + esc(R.as_of) + '</b> from ' + esc(R.source) + '. ' +
       'Each multiple is fitted on the protocols in this snapshot that already trade — log₁₀ TVL plus the ' +
       'category median, two coefficients learned by ridge regression — instead of the flat 0.25× the house ' +
-      'starter applies. The fit is scored leave-one-out and the numbers behind it are on the ' +
+      'starter applies. That multiple is then scaled by the odds of a token existing, fitted on all protocols ' +
+      'in the snapshot from size, age and 7d growth. The fit is scored leave-one-out, the odds ten-fold and ' +
+      'walk-forward, and the numbers behind both are on the ' +
       '<a href="?view=fit">How it\'s fitted</a> tab.';
 
     $('chips').innerHTML =
@@ -179,7 +181,7 @@
     });
 
     $('foot-left').innerHTML =
-      'radar-3 · ' + num(R.rows.length) + ' pre-token protocols · ' + num(C.rows) + ' live protocols fitted · ' +
+      esc(R.model_version) + ' · ' + num(R.rows.length) + ' pre-token protocols · ' + num(C.rows) + ' live protocols fitted · ' +
       'median held-out error ' + C.chosen_median.toFixed(2) + '× · 80% band held ' + pct(C.bandCoverage * 100);
   }
 
@@ -255,14 +257,15 @@
       ['cat', 'Category', 'l'],
       ['tvl', 'TVL', ''],
       ['change', '7d', ''],
+      ['odds', 'Token odds', ''],
       ['mult', 'Multiple ×', ''],
       ['rank', 'Implied value', ''],
       ['age', 'Age', '']
     ];
 
     html += '<div class="tablewrap"><table><colgroup>' +
-      '<col style="width:46px"><col><col style="width:18%"><col style="width:100px">' +
-      '<col style="width:78px"><col style="width:84px"><col style="width:170px"><col style="width:74px">' +
+      '<col style="width:46px"><col><col style="width:17%"><col style="width:96px">' +
+      '<col style="width:70px"><col style="width:80px"><col style="width:82px"><col style="width:166px"><col style="width:64px">' +
       '</colgroup><thead><tr>' +
       head.map(function (h) {
         var on = S.sort === h[0] && h[0] !== 'rank' ? ' class="on"' : (h[0] === 'rank' && S.sort === 'rank' && h[1] === 'Implied value' ? ' class="on"' : '');
@@ -281,6 +284,7 @@
         '<td class="cat">' + esc(r.category || '—') + '</td>' +
         '<td class="num">' + money(r.tvl_usd) + '</td>' +
         '<td class="num">' + chg + '</td>' +
+        '<td class="num"><span class="odds">' + m.token_odds.toFixed(2) + '</span></td>' +
         '<td class="num"><span class="mult"><span class="dot ' + m.peer_source + '"></span>' + x(m.fitted_multiple) + '</span></td>' +
         '<td class="num barcell"><div class="bar" style="width:' + w.toFixed(1) + '%"></div><span class="val">' + money(r.implied_value_usd) + '</span></td>' +
         '<td class="num">' + (r.age_days === null ? '<span class="mute">—</span>' : num(r.age_days) + 'd') + '</td>' +
@@ -322,24 +326,25 @@
           '<h3>' + esc(r.name) + '</h3>' +
           '<div class="dsub">' + esc(r.category || 'no category') + ' · ' + esc(chainList(r).join(', ')) + ' · ' + esc(r.slug) + '</div>' +
         '</div><span class="drank">rank ' + r.rank + ' of ' + num(R.rows.length) + '</span></div>' +
-        '<div class="bignum">' + money(r.implied_value_usd) + '<small>implied value if it launched today</small></div>' +
+        '<div class="bignum">' + money(r.implied_value_usd) + '<small>implied value today</small></div>' +
         '<div class="bandline">80% band ' + money(m.band_low_usd) + ' – ' + money(m.band_high_usd) +
           ' <span class="note">held ' + pct(C.bandCoverage * 100) + ' of the time on protocols the fit never saw</span></div>' +
         '<div class="kv">' +
           '<div><div class="k">TVL</div><div class="v">' + money(r.tvl_usd) + '</div></div>' +
           '<div><div class="k">7d change</div><div class="v ' + (r.change_7d < 0 ? 'neg' : r.change_7d > 0 ? 'pos' : '') + '">' + pct(r.change_7d) + '</div></div>' +
           '<div><div class="k">Age</div><div class="v">' + ageText(r.age_days) + '</div></div>' +
-          '<div><div class="k">Fitted multiple</div><div class="v">' + x(m.fitted_multiple) + '</div></div>' +
+          '<div><div class="k">Token odds</div><div class="v">' + m.token_odds.toFixed(3) + '</div></div>' +
           '<div><div class="k">Category median</div><div class="v">' + x(m.peer_median) + '</div></div>' +
           '<div><div class="k">Status</div><div class="v">pre-token</div></div>' +
         '</div>' +
         '<div class="formula">' +
-          money(r.tvl_usd) + ' <span class="op">×</span> <b>' + m.fitted_multiple.toFixed(4) + '</b> fitted' +
+          money(r.tvl_usd) + ' <span class="op">×</span> <b>' + m.regression_multiple.toFixed(4) + '</b> fit' +
+          ' <span class="op">×</span> <b>' + m.token_odds.toFixed(3) + '</b> odds' +
           ' <span class="op">=</span> <span class="res">' + money(r.implied_value_usd) + '</span>' +
         '</div>' +
-        '<div class="versus"><span class="big">' + money(flat) + '</span><span>A flat <b>0.25×</b> would say that. ' +
-          'radar-3 is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because the fit prices ' +
-          esc((r.category || 'this category').toLowerCase()) + ' at ' + x(m.fitted_multiple) + ' of TVL once its size is accounted for.</span></div>' +
+        '<div class="versus"><span class="big">' + money(m.launch_implied_usd) + '</span><span>That is the value if the token were already trading: TVL <span class="op">×</span> the fitted multiple, before the odds. ' +
+          'A flat <b>0.25×</b> would say ' + money(flat) + '; ' + esc(R.model_version) + ' is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because the fit prices ' +
+          esc((r.category || 'this category').toLowerCase()) + ' at ' + x(m.regression_multiple) + ' of TVL once its size is accounted for.</span></div>' +
       '</div>';
 
     var mults =
@@ -360,7 +365,8 @@
         '<div class="legend"><span><i style="background:var(--amber)"></i>raises the multiple</span>' +
         '<span><i style="background:var(--violet)"></i>lowers it</span></div>' +
         '<p class="note" style="margin:12px 0 0">Both coefficients were fitted by ridge regression on ' + num(C.rows) +
-        ' live protocols, not chosen by hand. 7d change and age were tested and dropped: adding them made held-out error worse.</p>' +
+        ' live protocols, not chosen by hand. 7d change and age do not price the multiple — adding them made held-out error worse — ' +
+        'so they enter the price through the odds of a token existing instead.</p>' +
       '</div>';
 
     var farm =
@@ -412,11 +418,12 @@
       '<div class="card">' +
         '<h2>The claim</h2>' +
         '<p class="lede">Every protocol on this board has TVL but no token. The board prices it at ' +
-          '<b>TVL × m</b>, where <b>m</b> is a multiple. The house starter says m = 0.25 for every protocol. ' +
+          '<b>TVL × m × p</b>: <b>m</b> is a multiple learned from the peers that already trade, and <b>p</b> is the odds ' +
+          'that a token exists at all. The house starter says m = 0.25 for every protocol, with no odds term. ' +
           'The snapshot disagrees: on the ' + num(C.rows) + ' protocols whose token already trades, a flat 0.25× ' +
           'misses the true multiple by a median of <b>' + C.ablation[0].median.toFixed(2) + '×</b>.</p>' +
-        '<p class="lede">So m is fitted. Two coefficients, learned from the snapshot by ridge regression, ' +
-          'and every number below was measured on protocols the fit never saw.</p>' +
+        '<p class="lede">So both factors are fitted, from the snapshot alone, and every number below was measured ' +
+          'on protocols the fit never saw.</p>' +
       '</div>';
 
     var rows = C.ablation.map(function (a) {
@@ -453,10 +460,13 @@
       '</div>';
 
     var corrRows = C.correlations.map(function (c) {
-      var kept = c.feature === 'log10 TVL' || c.feature === 'log10 category median';
+      var f = c.feature.toLowerCase();
+      var verdict = (f === 'log10 tvl' || f === 'log10 category median') ? '<span class="pos">kept</span>'
+        : (f.indexOf('age') >= 0 || f.indexOf('7d') >= 0) ? '<span class="pos">into odds</span>'
+        : '<span class="mute">dropped</span>';
       return '<tr><td class="name">' + esc(c.feature) + '</td>' +
         '<td class="num">' + (c.r >= 0 ? '+' : '') + c.r.toFixed(3) + '</td>' +
-        '<td class="num">' + (kept ? '<span class="pos">kept</span>' : '<span class="mute">dropped</span>') + '</td></tr>';
+        '<td class="num">' + verdict + '</td></tr>';
     }).join('');
 
     var corrCard =
@@ -465,8 +475,29 @@
         '<div class="tablewrap"><table class="board"><thead><tr>' +
           '<th>Candidate feature</th><th class="num">r with log₁₀ multiple</th><th class="num">Verdict</th>' +
         '</tr></thead><tbody>' + corrRows + '</tbody></table></div>' +
-        '<p class="note" style="margin:12px 0 0">Age measures at −0.003 — no relationship at all. 7d change is weak and, ' +
-          'once TVL is known, it makes held-out error worse. Both were dropped on the evidence, not on taste.</p>' +
+        '<p class="note" style="margin:12px 0 0">Neither feature prices the multiple: age measures at −0.003 and 7d change makes held-out ' +
+          'error worse once TVL is known. They are not thrown away, though — they are what moves the odds of a token existing at ' +
+          'all, which is the other factor in the price. So they enter the board through the odds column, not the fit.</p>' +
+      '</div>';
+
+    var o = R.odds;
+    var oddsCard = !o ? '' :
+      '<div class="card">' +
+        '<h2>Token odds: the other factor in the price</h2>' +
+        '<p class="lede">A protocol with no token is not worth TVL × m today — it is worth that <i>if a token ever exists</i>. ' +
+          'So the odds of a token sit in the price as a second factor, fitted on all ' + num(o.rows) + ' protocols in the snapshot ' +
+          'from three features: size, how long it has run without a token, and 7d growth.</p>' +
+        '<div class="stats">' +
+          stat('Peers with a token', pctAbs(o.record_share * 100), 'of the ' + num(o.rows) + ' protocols in the snapshot') +
+          stat('Held-out Brier', o.brier.toFixed(3), 'ten-fold, against ' + o.brier_base.toFixed(3) + ' for the base rate alone') +
+          stat('Called right', pctAbs(o.called_right * 100), 'ten-fold, against ' + pctAbs(o.called_right_base * 100) + ' for the base rate') +
+          stat('Walk-forward', o.brier_walk.toFixed(3), 'learned on the older rows, scored on the newer') +
+        '</div>' +
+        '<div class="formula">' + '<b>implied</b> = TVL <span class="op">×</span> fitted multiple <span class="op">×</span> token odds</div>' +
+        '<p class="note" style="margin:12px 0 0">The odds are the peers\' record, not a forecast: they say how often protocols this size, ' +
+          'this old and growing this fast carry a token, and the board never claims a token will launch. Age carries the sign you would ' +
+          'expect — the longer a protocol runs without a token, the likelier one is recorded for it — and that is exactly the relationship ' +
+          'the multiple could not use. Two features price it, three features say whether there is anything to price.</p>' +
       '</div>';
 
     var bandCard =
@@ -494,7 +525,7 @@
           'width of the uncertainty. Treat a single row as an order of magnitude, not a number.</p>' +
       '</div>';
 
-    return claim + ablationCard +
+    return claim + oddsCard + ablationCard +
       '<div class="detail"><div class="dcol">' + corrCard + '</div><div class="dcol">' + bandCard + '</div></div>' +
       honest;
   }
