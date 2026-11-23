@@ -302,6 +302,7 @@ td.num { font-family: var(--mono); font-size: 12px; }
 .mute { color: var(--dim-2); }
 
 .mult { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.odds { font-variant-numeric: tabular-nums; color: var(--violet); }
 .mult .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--signal); flex: none; }
 .mult .dot.borrowed { background: var(--violet); }
 .mult .dot.fallback { background: var(--dim-2); }
@@ -522,3 +523,30 @@ body[data-view="detail"] .versus { margin-top: 10px; }
   .hero-right { align-items: flex-start; }
   .chips { justify-content: flex-start; }
 }
+
+/* ---- radar-3: the calibration view ------------------------------------------------------------ */
+
+/* The band line sits directly under the headline number: the point estimate, then its honest width. */
+.bandline {
+  margin: -6px 0 18px;
+  font-size: 13px;
+  color: var(--dim);
+  letter-spacing: -0.01em;
+}
+.bandline .note { display: block; margin-top: 2px; font-size: 12px; color: var(--dim-2); }
+
+/* The one-paragraph claim at the top of the fit view, and the caveat at the bottom. */
+.lede {
+  margin: 0 0 12px;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--text);
+  max-width: 78ch;
+}
+.lede:last-child { margin-bottom: 0; }
+.lede b { color: var(--text); font-weight: 600; }
+
+/* The shipped specification, marked in the ablation table so the choice is visible, not buried. */
+.board tr.chosen { background: rgba(62, 230, 164, 0.05); }
+.board tr.chosen td { border-top-color: var(--signal-dim); border-bottom-color: var(--signal-dim); }
+.board tr.chosen .pname { color: var(--text); font-weight: 600; }

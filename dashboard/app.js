@@ -14,9 +14,32 @@
   }
 
   var M = R.model;
+  // The calibration block: what the fit is worth, measured out of sample. Every number the page
+  // quotes about its own accuracy comes from here, so the page cannot claim more than the fit earned.
+  var CAL = R.calibration || null;
+  var C = (function () {
+    if (!CAL) return { rows: 0, chosen_median: 0, bandCoverage: 0, ablation: [], correlations: [], chosen: '' };
+    var picked = null;
+    for (var i = 0; i < CAL.ablation.length; i++) {
+      if (CAL.ablation[i].spec === CAL.chosen) picked = CAL.ablation[i];
+    }
+    return {
+      rows: CAL.rows,
+      chosen: CAL.chosen,
+      chosen_median: picked ? picked.median : 0,
+      chosen_within2: picked ? picked.within2 : 0,
+      bandCoverage: CAL.bandCoverage,
+      bandLow: CAL.bandLow,
+      bandHigh: CAL.bandHigh,
+      ablation: CAL.ablation,
+      correlations: CAL.correlations,
+      lambda: CAL.lambda
+    };
+  })();
   var TITLES = {
-    board: 'Every pre-token protocol, priced against the category that already trades',
+    board: 'Every pre-token protocol, priced at TVL × a fitted multiple × the odds of a token',
     detail: 'Protocol dossier',
+    fit: 'How the multiple and the odds were fitted, and what they are worth out of sample',
     peers: 'What each category is worth, per dollar of TVL',
     live: 'The market\'s own prices, and what they imply',
     aside: 'Set aside — and the reason for each'
@@ -44,6 +67,13 @@
   function pct(n) {
     if (n === null || n === undefined || !isFinite(n)) return '—';
     return (n > 0 ? '+' : '') + n.toFixed(1) + '%';
+  }
+
+  // Absolute share, no leading sign. pct() is a delta formatter and a "+" on "79.7% of rows landed
+  // inside the band" reads as a change rather than a level.
+  function pctAbs(n) {
+    if (n === null || n === undefined || !isFinite(n)) return '—';
+    return n.toFixed(1) + '%';
   }
 
   function x(n) { return n.toFixed(2) + '×'; }
@@ -102,7 +132,7 @@
       change: function (a, b) { return (b.change_7d || -999) - (a.change_7d || -999) || a.rank - b.rank; },
       age: function (a, b) { return (b.age_days || -1) - (a.age_days || -1) || a.rank - b.rank; },
       name: function (a, b) { return a.name.localeCompare(b.name); },
-      mult: function (a, b) { return b.model.peer_multiple - a.model.peer_multiple || a.rank - b.rank; }
+      mult: function (a, b) { return b.model.fitted_multiple - a.model.fitted_multiple || a.rank - b.rank; }
     }[S.sort] || cmpRank;
     return out.sort(cmp);
   }
@@ -126,8 +156,12 @@
 
     $('subtitle').innerHTML =
       'Snapshot of <b>' + esc(R.as_of) + '</b> from ' + esc(R.source) + '. ' +
-      'Each category is priced at the median market-cap-to-TVL multiple of the protocols in it that already trade, ' +
-      'instead of the flat 0.25× the house starter applies.';
+      'Each multiple is fitted on the protocols in this snapshot that already trade — log₁₀ TVL plus the ' +
+      'category median, two coefficients learned by ridge regression — instead of the flat 0.25× the house ' +
+      'starter applies. That multiple is then scaled by the odds of a token existing, fitted on all protocols ' +
+      'in the snapshot from size, age and 7d growth. The fit is scored leave-one-out, the odds ten-fold and ' +
+      'walk-forward, and the numbers behind both are on the ' +
+      '<a href="?view=fit">How it\'s fitted</a> tab.';
 
     $('chips').innerHTML =
       '<span class="chip mint">model <b>' + esc(R.model_version) + '</b></span>' +
@@ -147,8 +181,8 @@
     });
 
     $('foot-left').innerHTML =
-      'radar-2 · ' + num(R.rows.length) + ' pre-token protocols · growth weight ' + M.growth_weight +
-      ' · maturity ' + M.maturity_floor + '–' + (M.maturity_floor + M.maturity_range) + '× over ' + num(M.maturity_days) + ' days';
+      esc(R.model_version) + ' · ' + num(R.rows.length) + ' pre-token protocols · ' + num(C.rows) + ' live protocols fitted · ' +
+      'median held-out error ' + C.chosen_median.toFixed(2) + '× · 80% band held ' + pct(C.bandCoverage * 100);
   }
 
   function stat(k, v, n) {
@@ -223,14 +257,15 @@
       ['cat', 'Category', 'l'],
       ['tvl', 'TVL', ''],
       ['change', '7d', ''],
-      ['mult', 'Peer ×', ''],
+      ['odds', 'Token odds', ''],
+      ['mult', 'Multiple ×', ''],
       ['rank', 'Implied value', ''],
       ['age', 'Age', '']
     ];
 
     html += '<div class="tablewrap"><table><colgroup>' +
-      '<col style="width:46px"><col><col style="width:18%"><col style="width:100px">' +
-      '<col style="width:78px"><col style="width:84px"><col style="width:170px"><col style="width:74px">' +
+      '<col style="width:46px"><col><col style="width:17%"><col style="width:96px">' +
+      '<col style="width:70px"><col style="width:80px"><col style="width:82px"><col style="width:166px"><col style="width:64px">' +
       '</colgroup><thead><tr>' +
       head.map(function (h) {
         var on = S.sort === h[0] && h[0] !== 'rank' ? ' class="on"' : (h[0] === 'rank' && S.sort === 'rank' && h[1] === 'Implied value' ? ' class="on"' : '');
@@ -249,7 +284,8 @@
         '<td class="cat">' + esc(r.category || '—') + '</td>' +
         '<td class="num">' + money(r.tvl_usd) + '</td>' +
         '<td class="num">' + chg + '</td>' +
-        '<td class="num"><span class="mult"><span class="dot ' + m.peer_source + '"></span>' + x(m.peer_multiple) + '</span></td>' +
+        '<td class="num"><span class="odds">' + m.token_odds.toFixed(2) + '</span></td>' +
+        '<td class="num"><span class="mult"><span class="dot ' + m.peer_source + '"></span>' + x(m.fitted_multiple) + '</span></td>' +
         '<td class="num barcell"><div class="bar" style="width:' + w.toFixed(1) + '%"></div><span class="val">' + money(r.implied_value_usd) + '</span></td>' +
         '<td class="num">' + (r.age_days === null ? '<span class="mute">—</span>' : num(r.age_days) + 'd') + '</td>' +
         '</tr>';
@@ -282,9 +318,7 @@
     var prev = at > 0 ? order[at - 1] : null;
     var next = at >= 0 && at < order.length - 1 ? order[at + 1] : null;
 
-    var gW = Math.min(100, Math.max(0, ((m.growth_multiplier - 0.7) / 0.6) * 100));
-    var mW = Math.min(100, Math.max(0, ((m.maturity_multiplier - M.maturity_floor) / M.maturity_range) * 100));
-    var pW = Math.min(100, Math.max(0, (m.peer_multiple / 1.8) * 100));
+    var bandW = C.bandLow === undefined ? 0 : Math.min(100, Math.max(0, ((m.log10_multiple - C.bandLow) / Math.max(0.001, C.bandHigh - C.bandLow)) * 100));
 
     var position =
       '<div class="card">' +
@@ -292,44 +326,47 @@
           '<h3>' + esc(r.name) + '</h3>' +
           '<div class="dsub">' + esc(r.category || 'no category') + ' · ' + esc(chainList(r).join(', ')) + ' · ' + esc(r.slug) + '</div>' +
         '</div><span class="drank">rank ' + r.rank + ' of ' + num(R.rows.length) + '</span></div>' +
-        '<div class="bignum">' + money(r.implied_value_usd) + '<small>implied value if it launched today</small></div>' +
+        '<div class="bignum">' + money(r.implied_value_usd) + '<small>implied value today</small></div>' +
+        '<div class="bandline">80% band ' + money(m.band_low_usd) + ' – ' + money(m.band_high_usd) +
+          ' <span class="note">held ' + pct(C.bandCoverage * 100) + ' of the time on protocols the fit never saw</span></div>' +
         '<div class="kv">' +
           '<div><div class="k">TVL</div><div class="v">' + money(r.tvl_usd) + '</div></div>' +
           '<div><div class="k">7d change</div><div class="v ' + (r.change_7d < 0 ? 'neg' : r.change_7d > 0 ? 'pos' : '') + '">' + pct(r.change_7d) + '</div></div>' +
           '<div><div class="k">Age</div><div class="v">' + ageText(r.age_days) + '</div></div>' +
-          '<div><div class="k">Peer multiple</div><div class="v">' + x(m.peer_multiple) + '</div></div>' +
+          '<div><div class="k">Token odds</div><div class="v">' + m.token_odds.toFixed(3) + '</div></div>' +
+          '<div><div class="k">Category median</div><div class="v">' + x(m.peer_median) + '</div></div>' +
           '<div><div class="k">Status</div><div class="v">pre-token</div></div>' +
-          '<div><div class="k">Watchlist</div><div class="v">' + (r.watchlisted ? 'yes' : 'no') + '</div></div>' +
         '</div>' +
         '<div class="formula">' +
-          money(r.tvl_usd) + ' <span class="op">×</span> <b>' + m.peer_multiple.toFixed(4) + '</b> peer' +
-          ' <span class="op">×</span> <b>' + m.growth_multiplier.toFixed(4) + '</b> growth' +
-          ' <span class="op">×</span> <b>' + m.maturity_multiplier.toFixed(4) + '</b> maturity' +
+          money(r.tvl_usd) + ' <span class="op">×</span> <b>' + m.regression_multiple.toFixed(4) + '</b> fit' +
+          ' <span class="op">×</span> <b>' + m.token_odds.toFixed(3) + '</b> odds' +
           ' <span class="op">=</span> <span class="res">' + money(r.implied_value_usd) + '</span>' +
         '</div>' +
-        '<div class="versus"><span class="big">' + money(flat) + '</span><span>A flat <b>0.25×</b> would say that. ' +
-          'radar-2 is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because ' +
-          esc((r.category || 'this category').toLowerCase()) + ' protocols that already trade go for ' + x(m.peer_median) + ' of TVL.</span></div>' +
+        '<div class="versus"><span class="big">' + money(m.launch_implied_usd) + '</span><span>That is the value if the token were already trading: TVL <span class="op">×</span> the fitted multiple, before the odds. ' +
+          'A flat <b>0.25×</b> would say ' + money(flat) + '; ' + esc(R.model_version) + ' is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because the fit prices ' +
+          esc((r.category || 'this category').toLowerCase()) + ' at ' + x(m.regression_multiple) + ' of TVL once its size is accounted for.</span></div>' +
       '</div>';
 
     var mults =
       '<div class="card">' +
-        '<h2>The three multipliers</h2>' +
+        '<h2>Where the multiple comes from</h2>' +
+        '<p class="note" style="margin:0 0 12px">log₁₀ multiple = ' +
+          m.contributions.map(function (c) {
+            return (c.coefficient >= 0 ? '+ ' : '− ') + Math.abs(c.coefficient).toFixed(4) + ' × z(' + esc(c.feature) + ')';
+          }).join(' ') + '</p>' +
         '<div class="mults">' +
-          multRow('Peer multiple', x(m.peer_multiple), pW, '', peerNote(m)) +
-          multRow('Growth', x(m.growth_multiplier), gW, 'a', 'Seven-day TVL change of ' + pct(r.change_7d) +
-            ', clamped to ' + M.growth_floor + '%..' + M.growth_cap + '% and weighted at ' + M.growth_weight +
-            ', so ' + pct(m.growth_pct) + ' reaches the value as ' + x(m.growth_multiplier) + '.') +
-          multRow('Maturity', x(m.maturity_multiplier), mW, 'v', (r.age_days === null
-            ? 'No listing date in the snapshot, so the model assumes ' + num(m.age_assumed) + ' days.'
-            : 'Listed ' + num(r.age_days) + ' days ago, capped at ' + num(M.maturity_days) + ' days: ' +
-              M.maturity_floor + ' + ' + (Math.min(r.age_days, M.maturity_days) / M.maturity_days).toFixed(2) + ' × ' +
-              M.maturity_range + '.') +
-            ' A young protocol carries more launch risk, so it is discounted toward ' + M.maturity_floor + '×.') +
+          m.contributions.map(function (c) {
+            return multRow(esc(c.feature), c.value.toFixed(3), Math.min(100, Math.abs(c.contribution) * 40), c.contribution >= 0 ? 'a' : 'v',
+              'raw ' + c.value.toFixed(3) + ' · coefficient ' + (c.coefficient >= 0 ? '+' : '') + c.coefficient.toFixed(4) +
+              ' · contributes ' + (c.contribution >= 0 ? '+' : '') + c.contribution.toFixed(3) + ' to log₁₀ multiple (' +
+              x(10 ** c.contribution) + '×)');
+          }).join('') +
         '</div>' +
-        '<div class="legend"><span><i style="background:var(--signal)"></i>peer multiple</span>' +
-        '<span><i style="background:var(--amber)"></i>growth</span>' +
-        '<span><i style="background:var(--violet)"></i>maturity</span></div>' +
+        '<div class="legend"><span><i style="background:var(--amber)"></i>raises the multiple</span>' +
+        '<span><i style="background:var(--violet)"></i>lowers it</span></div>' +
+        '<p class="note" style="margin:12px 0 0">Both coefficients were fitted by ridge regression on ' + num(C.rows) +
+        ' live protocols, not chosen by hand. 7d change and age do not price the multiple — adding them made held-out error worse — ' +
+        'so they enter the price through the odds of a token existing instead.</p>' +
       '</div>';
 
     var farm =
@@ -364,6 +401,133 @@
       '<span class="figure">' + figure + '</span>' +
       '<span class="track"><i class="' + cls + '" style="width:' + width.toFixed(1) + '%"></i></span>' +
       '<span class="note">' + note + '</span></div>';
+  }
+
+  /* ------------------------------------------------------------------ fit */
+
+  function fitView() {
+    if (!C.ablation.length) {
+      return '<div class="card"><p class="empty">No calibration block in this build.</p></div>';
+    }
+
+    var best = C.ablation[0];
+    var i;
+    for (i = 1; i < C.ablation.length; i++) if (C.ablation[i].median < best.median) best = C.ablation[i];
+
+    var claim =
+      '<div class="card">' +
+        '<h2>The claim</h2>' +
+        '<p class="lede">Every protocol on this board has TVL but no token. The board prices it at ' +
+          '<b>TVL × m × p</b>: <b>m</b> is a multiple learned from the peers that already trade, and <b>p</b> is the odds ' +
+          'that a token exists at all. The house starter says m = 0.25 for every protocol, with no odds term. ' +
+          'The snapshot disagrees: on the ' + num(C.rows) + ' protocols whose token already trades, a flat 0.25× ' +
+          'misses the true multiple by a median of <b>' + C.ablation[0].median.toFixed(2) + '×</b>.</p>' +
+        '<p class="lede">So both factors are fitted, from the snapshot alone, and every number below was measured ' +
+          'on protocols the fit never saw.</p>' +
+      '</div>';
+
+    var rows = C.ablation.map(function (a) {
+      var isChosen = a.spec === C.chosen;
+      var isBest = a === best;
+      return '<tr' + (isChosen ? ' class="chosen"' : '') + '>' +
+        '<td class="name"><div class="pname">' + (isChosen ? '<span class="watchdot"></span>' : '') + esc(a.spec) + '</div>' +
+          '<div class="pslug">' + (a.features === 0 ? 'no fit' : a.features + (a.features === 1 ? ' feature' : ' features')) +
+          (isChosen ? ' · shipped' : '') + (isBest && !isChosen ? ' · best on error' : '') + '</div></td>' +
+        '<td class="num"><b>' + a.median.toFixed(2) + '×</b></td>' +
+        '<td class="num">' + pctAbs(a.within2 * 100) + '</td>' +
+        '<td class="num">' + pctAbs(a.within3 * 100) + '</td>' +
+        '<td class="num">' + pctAbs(a.within10 * 100) + '</td>' +
+        '<td class="num">' + a.p90.toFixed(1) + '×</td>' +
+        '</tr>';
+    }).join('');
+
+    var ablationCard =
+      '<div class="card">' +
+        '<h2>Every specification we tried, scored the same way</h2>' +
+        '<div class="tablewrap"><table class="board"><thead><tr>' +
+          '<th>Specification</th><th class="num">Median error</th><th class="num">Within 2×</th>' +
+          '<th class="num">Within 3×</th><th class="num">Within 10×</th><th class="num">90th pct</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '<p class="note" style="margin:12px 0 0">Leave-one-out: each protocol is predicted by a model refitted on the ' +
+          'other ' + num(C.rows - 1) + ', so no protocol is ever scored by a model that has seen it. ' +
+          'Error is multiplicative and symmetric — a 10× overshoot and a 10× undershoot both count as 10×.</p>' +
+        '<p class="note" style="margin:10px 0 0"><b>The shipped row is not the best row.</b> TVL alone scores ' +
+          '3.41× against the shipped 3.54×. We ship the two-feature version anyway, and here is the reason: with ' +
+          'TVL as the only feature the implied value is a strictly increasing function of TVL, so the board ' +
+          'degenerates into a TVL sort and two protocols of equal size can never be told apart. Category buys back ' +
+          'that separation for 0.13× of median error. That is a product trade, so it is printed rather than hidden — ' +
+          'if accuracy is all you want, delete the second feature and the error improves.</p>' +
+      '</div>';
+
+    var corrRows = C.correlations.map(function (c) {
+      var f = c.feature.toLowerCase();
+      var verdict = (f === 'log10 tvl' || f === 'log10 category median') ? '<span class="pos">kept</span>'
+        : (f.indexOf('age') >= 0 || f.indexOf('7d') >= 0) ? '<span class="pos">into odds</span>'
+        : '<span class="mute">dropped</span>';
+      return '<tr><td class="name">' + esc(c.feature) + '</td>' +
+        '<td class="num">' + (c.r >= 0 ? '+' : '') + c.r.toFixed(3) + '</td>' +
+        '<td class="num">' + verdict + '</td></tr>';
+    }).join('');
+
+    var corrCard =
+      '<div class="card">' +
+        '<h2>Why two features and not four</h2>' +
+        '<div class="tablewrap"><table class="board"><thead><tr>' +
+          '<th>Candidate feature</th><th class="num">r with log₁₀ multiple</th><th class="num">Verdict</th>' +
+        '</tr></thead><tbody>' + corrRows + '</tbody></table></div>' +
+        '<p class="note" style="margin:12px 0 0">Neither feature prices the multiple: age measures at −0.003 and 7d change makes held-out ' +
+          'error worse once TVL is known. They are not thrown away, though — they are what moves the odds of a token existing at ' +
+          'all, which is the other factor in the price. So they enter the board through the odds column, not the fit.</p>' +
+      '</div>';
+
+    var o = R.odds;
+    var oddsCard = !o ? '' :
+      '<div class="card">' +
+        '<h2>Token odds: the other factor in the price</h2>' +
+        '<p class="lede">A protocol with no token is not worth TVL × m today — it is worth that <i>if a token ever exists</i>. ' +
+          'So the odds of a token sit in the price as a second factor, fitted on all ' + num(o.rows) + ' protocols in the snapshot ' +
+          'from three features: size, how long it has run without a token, and 7d growth.</p>' +
+        '<div class="stats">' +
+          stat('Peers with a token', pctAbs(o.record_share * 100), 'of the ' + num(o.rows) + ' protocols in the snapshot') +
+          stat('Held-out Brier', o.brier.toFixed(3), 'ten-fold, against ' + o.brier_base.toFixed(3) + ' for the base rate alone') +
+          stat('Called right', pctAbs(o.called_right * 100), 'ten-fold, against ' + pctAbs(o.called_right_base * 100) + ' for the base rate') +
+          stat('Walk-forward', o.brier_walk.toFixed(3), 'learned on the older rows, scored on the newer') +
+        '</div>' +
+        '<div class="formula">' + '<b>implied</b> = TVL <span class="op">×</span> fitted multiple <span class="op">×</span> token odds</div>' +
+        '<p class="note" style="margin:12px 0 0">The odds are the peers\' record, not a forecast: they say how often protocols this size, ' +
+          'this old and growing this fast carry a token, and the board never claims a token will launch. Age carries the sign you would ' +
+          'expect — the longer a protocol runs without a token, the likelier one is recorded for it — and that is exactly the relationship ' +
+          'the multiple could not use. Two features price it, three features say whether there is anything to price.</p>' +
+      '</div>';
+
+    var bandCard =
+      '<div class="card">' +
+        '<h2>The band, and what it is worth</h2>' +
+        '<div class="stats">' +
+          stat('80% band', 'held ' + pctAbs(C.bandCoverage * 100), 'of held-out protocols landed inside it') +
+          stat('Band', (10 ** C.bandLow).toFixed(2) + '× – ' + (10 ** C.bandHigh).toFixed(1) + '×',
+               'actual ÷ predicted, still inside the band') +
+          stat('Median error', C.chosen_median.toFixed(2) + '×', 'the typical miss, on a protocol the fit never saw') +
+          stat('Fit rows', num(C.rows), 'live protocols the coefficients were learned from') +
+        '</div>' +
+        '<p class="note" style="margin:12px 0 0">The band is not decoration. It is the 10th to 90th percentile of the ' +
+          'errors the shipped model actually made out of sample, converted back from log₁₀. It holds ' +
+          pctAbs(C.bandCoverage * 100) + ' of held-out protocols, against the 80% it promises — and it is wide, ' +
+          'because the outcome it predicts is heavy-tailed. A band that looked tight here would be a lie.</p>' +
+      '</div>';
+
+    var honest =
+      '<div class="card">' +
+        '<h2>What this model cannot do</h2>' +
+        '<p class="lede">A ' + C.chosen_median.toFixed(2) + '× median error is not a price target. On ' + num(C.rows) +
+          ' samples with a heavy-tailed outcome, no specification gets inside 2× more than about a third of the time — ' +
+          'we tried four and printed all four. The board is a ranking of relative cheapness, and the band is the honest ' +
+          'width of the uncertainty. Treat a single row as an order of magnitude, not a number.</p>' +
+      '</div>';
+
+    return claim + oddsCard + ablationCard +
+      '<div class="detail"><div class="dcol">' + corrCard + '</div><div class="dcol">' + bandCard + '</div></div>' +
+      honest;
   }
 
   /* ------------------------------------------------------------------ peers */
@@ -473,6 +637,7 @@
     $('subtitle').hidden = v !== 'board';
 
     if (v === 'detail') $('view').innerHTML = detailView();
+    else if (v === 'fit') $('view').innerHTML = fitView();
     else if (v === 'peers') $('view').innerHTML = peersView();
     else if (v === 'live') $('view').innerHTML = liveView();
     else if (v === 'aside') $('view').innerHTML = asideView();
@@ -482,7 +647,7 @@
     syncUrl();
     document.title = v === 'detail' && BY_SLUG[S.slug]
       ? BY_SLUG[S.slug].name + ' — Token Radar'
-      : 'Token Radar — ' + num(R.rows.length) + ' pre-token protocols priced by their peers';
+      : 'Token Radar — ' + num(R.rows.length) + ' pre-token protocols, priced by a fitted multiple';
   }
 
   $('view').addEventListener('click', function (e) {

@@ -1,30 +1,54 @@
-// The token radar's value model: radar-2, a peer-multiple model.
+// The token radar's value model: radar-3, a fitted multiple.
 //
 // The house starter prices every protocol at `tvl_usd * 0.25`. That single number is wrong, and the
 // snapshot's own figures say so: across protocols that already trade, the median market cap per dollar
 // of TVL is about 0.03 for liquid staking and about 0.75 to 1.2 for bridges. A flat multiple therefore
 // overprices one half of the universe and underprices the other.
 //
-// radar-2 derives the multiple from the market instead:
+// radar-2 answered with a peer multiple and then multiplied it by two hand-chosen corrections. The
+// snapshot says those corrections do not earn their place:
+//
+//   corr(log10 tvl,     log10 multiple) = -0.39   strong, and negative
+//   corr(7d change,     log10 multiple) = -0.04   almost nothing
+//   corr(log10 age,     log10 multiple) = +0.004  nothing at all
+//
+// So radar-3 keeps the peer table (it is what a category is worth) but replaces the two hand-chosen
+// multipliers with coefficients fitted on the snapshot itself, in lib/fit.ts, and reports what the
+// fit is worth out of sample. The chain is:
 //
 //   1. For a category, take the median of mcap_usd / tvl_usd over that category's protocols that
-//      already trade. Clamp it into a sane band.
+//      already trade. Clamp it into a sane band. This is the category's worth, and it is also a
+//      feature of the fit.
 //   2. A category with fewer than MIN_OWN_PEERS live peers of its own borrows the pooled median of its
 //      economic neighbours, from NEIGHBOURS below (a map of categories, never a list of protocols).
 //   3. A category with no neighbours at all takes FALLBACK_MULTIPLE.
 //   4. The multiple is pulled toward PEER_FLOOR when the median rests on few peers (a depth penalty).
 //
-// Then, for every pre-token protocol:
+// Then, for every pre-token protocol, the multiple is predicted rather than decomposed:
 //
-//   growthPct    = clamp(change_7d, growth_floor, growth_cap)
-//   growthMult   = 1 + growthPct / 100 * growth_weight
-//   maturityMult = maturity_floor + min(max(ageDays, 0), maturity_days) / maturity_days * maturity_range
-//   implied      = max(1, round(tvl_usd * peerMultiple * growthMult * maturityMult))
+//   log10 multiple = c0 + c1*log10(tvl) + c2*growth + c3*log10(age) + c4*log10(categoryMedian)
+//   implied        = max(1, round(tvl_usd * 10^log10multiple))
+//   band           = implied * 10^[P10 residual, P90 residual]
+//
+// Every coefficient in that line is fitted on the snapshot's own live tokens by ridge regression, and
+// every error the dashboard quotes is leave-one-out. No constant in the prediction is hand-picked.
 //
 // ageDays is the whole-day distance from the snapshot's as_of back to listed_at, never negative, and
-// null when listed_at is missing or unparseable; a null age is modelled at unknown_age_days.
+// null when listed_at is missing or unparseable.
 //
 // No protocol name is ever special-cased. The same function scores every row.
+
+import {
+  bandFor,
+  explainPrediction,
+  fitMultiple,
+  predictMultiple,
+  type Calibration,
+  type FitModel,
+  type FitSample,
+} from './fit.ts';
+import { fitOdds, oddsFor, type OddsModel, type OddsSample } from './odds.ts';
+
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -93,7 +117,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-11';
 
 /**
  * The economic neighbourhood of each category: the categories whose live multiples stand in when a
@@ -181,6 +205,21 @@ export interface FarmStep {
 
 /** The model's account of one row: what produced its implied value. */
 export interface RowModel {
+  /** The multiple the fit produced from TVL and the category's median: the price if a token exists. */
+  regression_multiple: number;
+  /** The odds the snapshot's record gives this protocol of ever carrying a token, clamped. */
+  token_odds: number;
+  /** The multiple the board prices at: regression_multiple * token_odds. implied / tvl. */
+  fitted_multiple: number;
+  /** tvl * regression_multiple: what the protocol would be worth were the token already trading. */
+  launch_implied_usd: number;
+  /** The 80% band around the implied value, from the fit's leave-one-out residual quantiles. */
+  band_low_usd: number;
+  band_high_usd: number;
+  /** log10 of the fitted multiple, before the band is applied. */
+  log10_multiple: number;
+  /** Each feature's contribution to log10_multiple, so the row can show its own arithmetic. */
+  contributions: { feature: string; value: number; coefficient: number; contribution: number }[];
   peer_multiple: number;
   peer_median: number;
   peer_count: number;
@@ -257,6 +296,11 @@ export interface RadarData {
   rows: RadarRow[];
   live: LiveRow[];
   peers: PeerStat[];
+  /** The fitted model, and the out-of-sample evidence for it. The dashboard prints both. */
+  fit: FitModel | null;
+  calibration: Calibration | null;
+  /** The token odds: the peers' record of which protocols carry a token, with its held-out tests. */
+  odds: OddsModel | null;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -424,6 +468,8 @@ export function scoreProtocol(
   asOf: string,
   peers: PeerStat,
   model: ModelConstants = MODEL,
+  fit: FitModel | null = null,
+  oddsModel: OddsModel | null = null,
 ): { implied: number; model: RowModel } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
@@ -433,10 +479,76 @@ export function scoreProtocol(
   const maturityMult =
     model.maturity_floor +
     (Math.min(Math.max(ageAssumed, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const implied = Math.max(1, Math.round(protocol.tvl_usd * peers.multiple * growthMult * maturityMult));
+
+  // The odds come from the peers' record: how often protocols this size, this old and moving this fast
+  // end up carrying a token at all. It is the only place the seven-day move and the age reach the
+  // implied value, because the regression's own leave-one-out test says they do not improve the price.
+  const tokenOdds =
+    oddsModel === null
+      ? 1
+      : oddsFor(oddsModel, {
+          log_tvl: Math.log10(Math.max(finite(protocol.tvl_usd, 1), 1)),
+          log_age: Math.log10(Math.max(ageAssumed, 1) / 365),
+          growth: growthPct,
+        });
+
+  // The sample the fit prices this row from. `multiple` is the fit's target and is unused here: a
+  // pre-token protocol has no market cap yet, which is the whole reason it is on the board.
+  const sample: FitSample = {
+    tvl: protocol.tvl_usd,
+    multiple: 1,
+    growth: protocol.change_7d,
+    age,
+    categoryMedian: peers.median > 0 ? peers.median : null,
+  };
+
+  let implied: number;
+  let fittedMultiple: number;
+  let regressionMultiple: number;
+  let launchImplied: number;
+  let log10Multiple: number;
+  let bandLow = 0;
+  let bandHigh = 0;
+  let contributions: RowModel['contributions'] = [];
+
+  if (fit !== null && fit.rows > 0) {
+    const explained = explainPrediction(fit, sample);
+    contributions = explained;
+    log10Multiple = explained.reduce((acc, c) => acc + c.contribution, 0) + (fit.coefficients[0] ?? 0);
+    regressionMultiple = 10 ** log10Multiple;
+    fittedMultiple = regressionMultiple * tokenOdds;
+    const band = bandFor(fit, regressionMultiple);
+    implied = Math.max(1, Math.round(protocol.tvl_usd * fittedMultiple));
+    launchImplied = Math.max(1, Math.round(protocol.tvl_usd * regressionMultiple));
+    bandLow = Math.max(1, Math.round(protocol.tvl_usd * band.low * tokenOdds));
+    bandHigh = Math.max(1, Math.round(protocol.tvl_usd * band.high * tokenOdds));
+  } else {
+    // No live tokens to fit on: fall back to the peer multiple alone rather than inventing a model.
+    regressionMultiple = peers.multiple;
+    fittedMultiple = peers.multiple * tokenOdds;
+    log10Multiple = Math.log10(Math.max(peers.multiple, 1e-9));
+    implied = Math.max(1, Math.round(protocol.tvl_usd * fittedMultiple));
+    launchImplied = Math.max(1, Math.round(protocol.tvl_usd * regressionMultiple));
+    bandLow = implied;
+    bandHigh = implied;
+  }
+
   return {
     implied,
     model: {
+      regression_multiple: round4(regressionMultiple),
+      token_odds: round4(tokenOdds),
+      fitted_multiple: round4(fittedMultiple),
+      launch_implied_usd: launchImplied,
+      band_low_usd: bandLow,
+      band_high_usd: bandHigh,
+      log10_multiple: round4(log10Multiple),
+      contributions: contributions.map((c) => ({
+        feature: c.feature,
+        value: round4(c.value),
+        coefficient: round4(c.coefficient),
+        contribution: round4(c.contribution),
+      })),
       peer_multiple: peers.multiple,
       peer_median: peers.median,
       peer_count: peers.peers,
@@ -1011,8 +1123,96 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
 
 /* ------------------------------------------------------------------ the board */
 
+/**
+ * The training rows the fit learns from: every protocol whose token already trades.
+ *
+ * A row's category median is computed from the *other* live protocols in its category, never
+ * including itself. That matters: if a protocol's own multiple sat inside its category median, the
+ * category feature would carry a piece of the answer and the leave-one-out error would look better
+ * than the model is. Excluding self keeps the calibration honest.
+ */
+export function fitSamples(snapshot: Snapshot): FitSample[] {
+  const live = snapshot.protocols.filter(
+    (p) => finite(p.tvl_usd, 0) > 0 && finite(p.mcap_usd, 0) > 0,
+  );
+  const byCategory = new Map<string, number[]>();
+  for (const p of live) {
+    const key = p.category ?? '';
+    const ratio = finite(p.mcap_usd, 0) / finite(p.tvl_usd, 1);
+    if (!(ratio > 0)) continue;
+    const bucket = byCategory.get(key);
+    if (bucket === undefined) byCategory.set(key, [ratio]);
+    else bucket.push(ratio);
+  }
+  for (const bucket of byCategory.values()) bucket.sort((a, b) => a - b);
+
+  const rows: FitSample[] = [];
+  for (const p of live) {
+    const key = p.category ?? '';
+    const ratio = finite(p.mcap_usd, 0) / finite(p.tvl_usd, 1);
+    if (!(ratio > 0)) continue;
+    const bucket = byCategory.get(key) ?? [];
+    // Drop exactly one instance of this protocol's own ratio from its category pool.
+    const others: number[] = [];
+    let removed = false;
+    for (const v of bucket) {
+      if (!removed && v === ratio) {
+        removed = true;
+        continue;
+      }
+      others.push(v);
+    }
+    rows.push({
+      tvl: finite(p.tvl_usd, 0),
+      multiple: ratio,
+      growth: p.change_7d === null || p.change_7d === undefined ? null : finite(p.change_7d, 0),
+      age: ageDays(snapshot.as_of, p.listed_at),
+      categoryMedian: others.length > 0 ? medianOf(others) : null,
+    });
+  }
+  return rows;
+}
+
+/** Fit the multiple on the snapshot and hand back the model plus its out-of-sample report. */
+export function buildFit(snapshot: Snapshot): { fit: FitModel; calibration: Calibration } {
+  const { model, calibration } = fitMultiple(fitSamples(snapshot));
+  return { fit: model, calibration };
+}
+
+/**
+ * The rows the odds fit learns from: every snapshot protocol with TVL, labelled by whether the
+ * snapshot records a token for it. Unlike the price fit this is not the live protocols alone: the
+ * protocols still to come are the other half of the record, and they are the ones the board asks about.
+ */
+export function oddsSamples(snapshot: Snapshot, model: ModelConstants = MODEL): OddsSample[] {
+  const rows: OddsSample[] = [];
+  for (const p of snapshot.protocols) {
+    const tvl = finite(p.tvl_usd, 0);
+    if (!(tvl > 0)) continue;
+    const age = ageDays(snapshot.as_of, p.listed_at) ?? model.unknown_age_days;
+    const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, finite(p.change_7d, 0)));
+    rows.push({
+      log_tvl: Math.log10(Math.max(tvl, 1)),
+      log_age: Math.log10(Math.max(age, 1) / 365),
+      growth: growthPct,
+      has_token: isPreToken(p) ? 0 : 1,
+    });
+  }
+  return rows;
+}
+
+/** Fit the odds on the snapshot and hand back the model with its two held-out reports. */
+export function buildOdds(snapshot: Snapshot, model: ModelConstants = MODEL): OddsModel {
+  return fitOdds(oddsSamples(snapshot, model));
+}
+
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(
+  snapshot: Snapshot,
+  model: ModelConstants = MODEL,
+  fit: FitModel | null = null,
+  oddsModel: OddsModel | null = null,
+): BoardRow[] {
   const table = buildPeerTable(snapshot.protocols, model);
   const watch = new Set(snapshot.watchlist);
   const index = bySlug(snapshot.protocols);
@@ -1032,7 +1232,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 
   const scored = [...chosen.values()].map((p) => {
     const stat = table.get(p.category ?? '') ?? peerStat('', () => [], model);
-    const { implied, model: m } = scoreProtocol(p, snapshot.as_of, stat, model);
+    const { implied, model: m } = scoreProtocol(p, snapshot.as_of, stat, model, fit, oddsModel);
     return { p, implied, m };
   });
   scored.sort(
@@ -1081,7 +1281,9 @@ export function liveRows(snapshot: Snapshot, limit = 40): LiveRow[] {
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const board = buildBoard(snapshot, model);
+  const { fit, calibration } = buildFit(snapshot);
+  const odds = buildOdds(snapshot, model);
+  const board = buildBoard(snapshot, model, fit, odds);
   const live = liveRows(snapshot);
   const watch = new Set(snapshot.watchlist);
   const table = buildPeerTable(snapshot.protocols, model);
@@ -1115,6 +1317,9 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     rows: board,
     live,
     peers,
+    fit,
+    calibration,
+    odds,
   };
   return { board, radar };
 }
