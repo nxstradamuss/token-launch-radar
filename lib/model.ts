@@ -1055,7 +1055,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '15-20 minutes to set up',
     },
     {
-      text: `Set the size so that: ${plan.mix}; write the exact amounts in a note so the plan can be repeated or unwound.`,
+      text: `Set the size and the mix — ${plan.mix} — then write the exact amounts in a note so the plan can be repeated or unwound.`,
       cost: `the $${capital} stays in the position`,
       time: '10 minutes',
     },
