@@ -78,6 +78,16 @@
 
   function x(n) { return n.toFixed(2) + '×'; }
 
+  // The board prices TVL × multiple, so the multiple is printed with four significant figures
+  // instead of two decimals: at 0.0292× a two-decimal column reads 0.03× and the row no longer
+  // multiplies out to the implied value beside it.
+  function xs(n) {
+    if (n >= 10) return n.toFixed(1) + '×';
+    if (n >= 1) return n.toFixed(3) + '×';
+    if (n >= 0.1) return n.toFixed(4) + '×';
+    return n.toFixed(5) + '×';
+  }
+
   function num(n) { return n.toLocaleString('en-US'); }
 
   function ageText(d) { return d === null || d === undefined ? 'unknown' : num(d) + 'd'; }
@@ -179,7 +189,7 @@
     });
 
     $('foot-left').innerHTML =
-      'radar-3 · ' + num(R.rows.length) + ' pre-token protocols · ' + num(C.rows) + ' live protocols fitted · ' +
+      esc(R.model_version) + ' · ' + num(R.rows.length) + ' pre-token protocols · ' + num(C.rows) + ' live protocols fitted · ' +
       'median held-out error ' + C.chosen_median.toFixed(2) + '× · 80% band held ' + pct(C.bandCoverage * 100);
   }
 
@@ -281,7 +291,7 @@
         '<td class="cat">' + esc(r.category || '—') + '</td>' +
         '<td class="num">' + money(r.tvl_usd) + '</td>' +
         '<td class="num">' + chg + '</td>' +
-        '<td class="num"><span class="mult"><span class="dot ' + m.peer_source + '"></span>' + x(m.fitted_multiple) + '</span></td>' +
+        '<td class="num"><span class="mult"><span class="dot ' + m.peer_source + '"></span>' + xs(m.fitted_multiple) + '</span></td>' +
         '<td class="num barcell"><div class="bar" style="width:' + w.toFixed(1) + '%"></div><span class="val">' + money(r.implied_value_usd) + '</span></td>' +
         '<td class="num">' + (r.age_days === null ? '<span class="mute">—</span>' : num(r.age_days) + 'd') + '</td>' +
         '</tr>';
@@ -329,17 +339,20 @@
           '<div><div class="k">TVL</div><div class="v">' + money(r.tvl_usd) + '</div></div>' +
           '<div><div class="k">7d change</div><div class="v ' + (r.change_7d < 0 ? 'neg' : r.change_7d > 0 ? 'pos' : '') + '">' + pct(r.change_7d) + '</div></div>' +
           '<div><div class="k">Age</div><div class="v">' + ageText(r.age_days) + '</div></div>' +
-          '<div><div class="k">Fitted multiple</div><div class="v">' + x(m.fitted_multiple) + '</div></div>' +
+          '<div><div class="k">Fitted multiple</div><div class="v">' + xs(m.fitted_multiple) + '</div></div>' +
           '<div><div class="k">Category median</div><div class="v">' + x(m.peer_median) + '</div></div>' +
           '<div><div class="k">Status</div><div class="v">pre-token</div></div>' +
         '</div>' +
         '<div class="formula">' +
-          money(r.tvl_usd) + ' <span class="op">×</span> <b>' + m.fitted_multiple.toFixed(4) + '</b> fitted' +
+          money(r.tvl_usd) + ' <span class="op">×</span> <b>' + m.fitted_multiple.toFixed(4) + '</b> multiple' +
           ' <span class="op">=</span> <span class="res">' + money(r.implied_value_usd) + '</span>' +
+          '<div class="note" style="margin-top:6px">multiple = ' + (m.regression_multiple || m.fitted_multiple).toFixed(4) +
+          ' fitted <span class="op">×</span> ' + (m.growth_multiplier || 1).toFixed(3) + ' growth' +
+          ' <span class="op">×</span> ' + (m.maturity_multiplier || 1).toFixed(3) + ' age</div>' +
         '</div>' +
         '<div class="versus"><span class="big">' + money(flat) + '</span><span>A flat <b>0.25×</b> would say that. ' +
-          'radar-3 is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because the fit prices ' +
-          esc((r.category || 'this category').toLowerCase()) + ' at ' + x(m.fitted_multiple) + ' of TVL once its size is accounted for.</span></div>' +
+          esc(R.model_version) + ' is <b>' + Math.abs(delta).toFixed(0) + '% ' + (delta < 0 ? 'lower' : 'higher') + '</b>, because the fit prices ' +
+          esc((r.category || 'this category').toLowerCase()) + ' at ' + xs(m.fitted_multiple) + ' of TVL once its size, its 7d change and its age are accounted for.</span></div>' +
       '</div>';
 
     var mults =
@@ -360,7 +373,10 @@
         '<div class="legend"><span><i style="background:var(--amber)"></i>raises the multiple</span>' +
         '<span><i style="background:var(--violet)"></i>lowers it</span></div>' +
         '<p class="note" style="margin:12px 0 0">Both coefficients were fitted by ridge regression on ' + num(C.rows) +
-        ' live protocols, not chosen by hand. 7d change and age were tested and dropped: adding them made held-out error worse.</p>' +
+        ' live protocols, not chosen by hand. That is the regression part only. 7d change and age are not ' +
+        'regression terms here — their correlation with the multiple is near zero, and fitting them made held-out ' +
+        'error worse — so they enter the price as bounded multipliers instead: 7d change is clamped to ' +
+        m.growth_multiplier.toFixed(3) + ' and age to ' + m.maturity_multiplier.toFixed(3) + ' on this protocol, and both are shown above.</p>' +
       '</div>';
 
     var farm =
@@ -416,7 +432,9 @@
           'The snapshot disagrees: on the ' + num(C.rows) + ' protocols whose token already trades, a flat 0.25× ' +
           'misses the true multiple by a median of <b>' + C.ablation[0].median.toFixed(2) + '×</b>.</p>' +
         '<p class="lede">So m is fitted. Two coefficients, learned from the snapshot by ridge regression, ' +
-          'and every number below was measured on protocols the fit never saw.</p>' +
+          'and every number below was measured on protocols the fit never saw. Seven-day growth and age are ' +
+          'the other two figures the brief names: they are not regression terms, but they scale m as bounded ' +
+          'multipliers, so the price follows from TVL, growth and age together.</p>' +
       '</div>';
 
     var rows = C.ablation.map(function (a) {
@@ -456,7 +474,7 @@
       var kept = c.feature === 'log10 TVL' || c.feature === 'log10 category median';
       return '<tr><td class="name">' + esc(c.feature) + '</td>' +
         '<td class="num">' + (c.r >= 0 ? '+' : '') + c.r.toFixed(3) + '</td>' +
-        '<td class="num">' + (kept ? '<span class="pos">kept</span>' : '<span class="mute">dropped</span>') + '</td></tr>';
+        '<td class="num">' + (kept ? '<span class="pos">kept in fit</span>' : '<span class="mute">out of fit</span>') + '</td></tr>';
     }).join('');
 
     var corrCard =
@@ -465,8 +483,11 @@
         '<div class="tablewrap"><table class="board"><thead><tr>' +
           '<th>Candidate feature</th><th class="num">r with log₁₀ multiple</th><th class="num">Verdict</th>' +
         '</tr></thead><tbody>' + corrRows + '</tbody></table></div>' +
-        '<p class="note" style="margin:12px 0 0">Age measures at −0.003 — no relationship at all. 7d change is weak and, ' +
-          'once TVL is known, it makes held-out error worse. Both were dropped on the evidence, not on taste.</p>' +
+        '<p class="note" style="margin:12px 0 0">Age measures at −0.003 — no relationship at all. 7d change is weak, and ' +
+          'once TVL is known a fitted coefficient on it makes held-out error worse. So neither is a regression term. ' +
+          'Both still move the implied value, as bounded multipliers clamped to the ranges in the model — kept out of ' +
+          'the fit because the fit would only learn noise, kept in the price because the brief asks the value to follow ' +
+          'from them.</p>' +
       '</div>';
 
     var bandCard =

@@ -116,7 +116,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-10';
 
 /**
  * The economic neighbourhood of each category: the categories whose live multiples stand in when a
@@ -206,6 +206,7 @@ export interface FarmStep {
 export interface RowModel {
   /** The fitted multiple: implied / tvl. Every number below feeds the fit that produced it. */
   fitted_multiple: number;
+  regression_multiple: number;
   /** The 80% band around the implied value, from the fit's leave-one-out residual quantiles. */
   band_low_usd: number;
   band_high_usd: number;
@@ -482,6 +483,7 @@ export function scoreProtocol(
 
   let implied: number;
   let fittedMultiple: number;
+  let regressionMultiple: number;
   let log10Multiple: number;
   let bandLow = 0;
   let bandHigh = 0;
@@ -490,17 +492,29 @@ export function scoreProtocol(
   if (fit !== null && fit.rows > 0) {
     const explained = explainPrediction(fit, sample);
     contributions = explained;
-    log10Multiple = explained.reduce((acc, c) => acc + c.contribution, 0) + (fit.coefficients[0] ?? 0);
-    fittedMultiple = 10 ** log10Multiple;
-    const band = bandFor(fit, fittedMultiple);
+    const regressionLog10 =
+      explained.reduce((acc, c) => acc + c.contribution, 0) + (fit.coefficients[0] ?? 0);
+    // The brief names three figures the implied value follows from: TVL, seven-day growth and age.
+    // The regression carries TVL and the category median. Growth and age enter as bounded
+    // adjustments instead of regression terms, because their raw correlation with the multiple is
+    // near zero (r = -0.149 and -0.003): a ridge coefficient on them fits noise, while a clamp keeps
+    // them in the price without letting either one swing it.
+    regressionMultiple = 10 ** regressionLog10;
+    const adjustedMultiple = regressionMultiple * growthMult * maturityMult;
+    // Price from the multiple as it is printed (4 dp), so the arithmetic on the page is exact and a
+    // reader can multiply the shown figures themselves.
+    fittedMultiple = round4(adjustedMultiple);
+    log10Multiple = Math.log10(Math.max(adjustedMultiple, 1e-9));
+    const band = bandFor(fit, adjustedMultiple);
     implied = Math.max(1, Math.round(protocol.tvl_usd * fittedMultiple));
     bandLow = Math.max(1, Math.round(protocol.tvl_usd * band.low));
     bandHigh = Math.max(1, Math.round(protocol.tvl_usd * band.high));
   } else {
     // No live tokens to fit on: fall back to the peer multiple alone rather than inventing a model.
-    fittedMultiple = peers.multiple;
-    log10Multiple = Math.log10(Math.max(peers.multiple, 1e-9));
-    implied = Math.max(1, Math.round(protocol.tvl_usd * peers.multiple * growthMult * maturityMult));
+    regressionMultiple = peers.multiple;
+    fittedMultiple = peers.multiple * growthMult * maturityMult;
+    log10Multiple = Math.log10(Math.max(fittedMultiple, 1e-9));
+    implied = Math.max(1, Math.round(protocol.tvl_usd * fittedMultiple));
     bandLow = implied;
     bandHigh = implied;
   }
@@ -509,6 +523,7 @@ export function scoreProtocol(
     implied,
     model: {
       fitted_multiple: round4(fittedMultiple),
+      regression_multiple: round4(regressionMultiple),
       band_low_usd: bandLow,
       band_high_usd: bandHigh,
       log10_multiple: round4(log10Multiple),
